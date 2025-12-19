@@ -364,21 +364,77 @@
     return c;
   }
 
-  function makeOrbSprite(type, size = 32) {
+  function makeCheeseSprite(size = 32) {
     const c = document.createElement('canvas');
     c.width = c.height = size;
     const g = c.getContext('2d');
     g.imageSmoothingEnabled = false;
-    const cx = size / 2, cy = size / 2, r = size * 0.35;
-    g.fillStyle = type === 'green' ? '#7cffc4' : type === 'elite' ? '#ffb37a' : '#ff6d6d';
-    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = type === 'green' ? '#1c5844' : '#6c1d1d';
-    g.lineWidth = 2; g.stroke();
-    g.fillStyle = type === 'elite' ? 'rgba(255,50,120,0.5)' : 'rgba(255,255,255,0.35)';
-    g.beginPath(); g.arc(cx - r / 2, cy - r / 2, r * 0.5, 0, Math.PI * 2); g.fill();
-    g.fillStyle = 'rgba(255,255,255,0.6)';
-    for (let i = 0; i < 6; i++) g.fillRect(cx + (Math.random() - 0.5) * r, cy + (Math.random() - 0.5) * r, 2, 2);
-    if (type === 'elite') { g.strokeStyle = '#ff3c78'; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy, r * 0.7, 0, Math.PI * 2); g.stroke(); }
+    const w = size * 0.7, h = size * 0.5;
+    const x = size * 0.15, y = size * 0.3;
+    g.fillStyle = '#ffd86b';
+    g.beginPath();
+    g.moveTo(x, y + h);
+    g.lineTo(x + w, y + h * 0.75);
+    g.lineTo(x + w, y);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = '#c79632';
+    g.lineWidth = 2;
+    g.stroke();
+    g.fillStyle = '#f7c652';
+    g.fillRect(x + w * 0.1, y + h * 0.4, w * 0.25, h * 0.2);
+    g.fillRect(x + w * 0.45, y + h * 0.55, w * 0.18, h * 0.15);
+    g.fillRect(x + w * 0.6, y + h * 0.2, w * 0.12, h * 0.12);
+    g.fillStyle = 'rgba(140,255,210,0.6)';
+    g.fillRect(x + w * 0.2, y + h * 0.15, 3, 3);
+    g.fillRect(x + w * 0.55, y + h * 0.05, 2, 2);
+    return c;
+  }
+
+  function makeCatSprite(type = 'red', size = 32) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    const cx = size / 2, cy = size / 2;
+    const main = type === 'elite' ? '#ff6d9c' : '#f2745f';
+    const outline = type === 'elite' ? '#8b0f3c' : '#7a1e1a';
+    g.fillStyle = main;
+    g.strokeStyle = outline;
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(cx - 10, cy - 6);
+    g.lineTo(cx - 6, cy - 12);
+    g.lineTo(cx - 2, cy - 6);
+    g.lineTo(cx + 2, cy - 12);
+    g.lineTo(cx + 6, cy - 6);
+    g.lineTo(cx + 10, cy - 6);
+    g.lineTo(cx + 10, cy + 8);
+    g.lineTo(cx - 10, cy + 8);
+    g.closePath();
+    g.fill();
+    g.stroke();
+    g.fillStyle = '#ffe6c9';
+    g.fillRect(cx - 6, cy - 1, 3, 3);
+    g.fillRect(cx + 2, cy - 1, 3, 3);
+    g.fillStyle = outline;
+    g.fillRect(cx - 4, cy + 4, 2, 2);
+    g.fillRect(cx + 2, cy + 4, 2, 2);
+    g.fillStyle = '#d62a2a';
+    g.fillRect(cx - 1, cy + 3, 2, 2);
+    g.fillStyle = '#ffbfbf';
+    g.fillRect(cx - 1, cy + 6, 2, 2);
+    // angry brows
+    g.fillStyle = outline;
+    g.fillRect(cx - 6, cy - 4, 4, 2);
+    g.fillRect(cx + 2, cy - 4, 4, 2);
+    if (type === 'elite') {
+      g.strokeStyle = '#ff3c78';
+      g.beginPath();
+      g.moveTo(cx + 8, cy - 10);
+      g.lineTo(cx + 12, cy - 14);
+      g.stroke();
+    }
     return c;
   }
 
@@ -407,9 +463,9 @@
   function generateSprites() {
     if (spritesGenerated) return;
     storeSprite('playerMouse', makeMouseSprite(48));
-    storeSprite('orbGreen', makeOrbSprite('green', 32));
-    storeSprite('orbRed', makeOrbSprite('red', 32));
-    storeSprite('orbElite', makeOrbSprite('elite', 32));
+    storeSprite('orbGreen', makeCheeseSprite(32));
+    storeSprite('orbRed', makeCatSprite('red', 32));
+    storeSprite('orbElite', makeCatSprite('elite', 32));
     storeSprite('iconShield', makeIconSprite('shield', 22));
     storeSprite('iconMagnet', makeIconSprite('magnet', 22));
     storeSprite('iconSlow', makeIconSprite('slow', 22));
