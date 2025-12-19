@@ -1025,13 +1025,28 @@
     ctx.stroke();
   }
 
+  function drawSprite(sprite, x, y, size, opts = {}) {
+    if (!sprite) return false;
+    const { rotate = 0, alpha = 1, smoothing = false } = opts;
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    const prevAlpha = ctx.globalAlpha;
+    ctx.imageSmoothingEnabled = smoothing;
+    ctx.globalAlpha = alpha;
+    ctx.save();
+    ctx.translate(x, y);
+    if (rotate !== 0) ctx.rotate(rotate);
+    ctx.drawImage(sprite, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    ctx.imageSmoothingEnabled = prevSmooth;
+    ctx.globalAlpha = prevAlpha;
+    return true;
+  }
+
   function drawBalls() {
     for (const b of balls) {
       const key = b.type === 'green' ? 'orbGreen' : (b.type === 'elite' ? 'orbElite' : 'orbRed');
       const sprite = SPRITES[key];
-      if (sprite) {
-        drawSprite(sprite, b.x, b.y, b.r * 3);
-      } else {
+      if (!drawSprite(sprite, b.x, b.y, b.r * 3)) {
         ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
@@ -1043,10 +1058,8 @@
   function drawPowerups() {
     for (const p of powerups) {
       const sprite = SPRITES[p.type === 'shield' ? 'iconShield' : p.type === 'magnet' ? 'iconMagnet' : 'iconSlow'];
-      if (sprite) {
-        const sz = p.r * 2.5;
-        drawSprite(sprite, p.x, p.y, sz);
-      } else {
+      const sz = p.r * 2.5;
+      if (!drawSprite(sprite, p.x, p.y, sz)) {
         ctx.fillStyle = powerColor(p.type);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
@@ -1056,22 +1069,30 @@
   }
 
   function drawPlayer() {
-    const sprite = SPRITES.player;
+    const sprite = SPRITES.playerMouse;
     const baseSize = player.r * 3.4;
-    if (sprite) {
+    let drewSprite = false;
+    if (renderMode === 'sprite' && sprite) {
       const bob = Math.sin(performance.now() / 200) * 1.5;
       const scaleY = player.dashTime > 0 ? 0.9 : 1;
       const scaleX = player.dashTime > 0 ? 1.1 : 1;
       ctx.save();
       ctx.translate(player.x, player.y + bob);
       ctx.scale(scaleX, scaleY);
-      drawSprite(sprite, 0, 0, baseSize);
+      drewSprite = drawSprite(sprite, 0, 0, baseSize);
       ctx.restore();
-    } else {
+      if (drewSprite) lastSpriteDrawn = 'playerMouse';
+    }
+    if (!drewSprite) {
+      if (!spriteFallbackWarned && renderMode === 'sprite') {
+        console.warn("Mouse sprite fallback active: sprite missing");
+        spriteFallbackWarned = true;
+      }
       ctx.fillStyle = '#3aff85';
       ctx.beginPath();
       ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
       ctx.fill();
+      lastSpriteDrawn = 'circle';
     }
     if (activePower.type === 'shield' && activePower.timer > 0 && activePower.charges > 0) {
       ctx.strokeStyle = '#71e6ff';
