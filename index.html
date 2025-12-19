@@ -160,7 +160,6 @@
   function randRange(min, max) { return Math.random() * (max - min) + min; }
   function clamp(v, min, max) { return v < min ? min : v > max ? max : v; }
   function distanceSq(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
-  function iround(v) { return v; } // keep for minimal adjustments if needed
   function refreshNoise() {
     if (!ENABLE_GRAIN) return;
     const w = noiseCanvas.width;
@@ -707,7 +706,8 @@
   }
 
   function applyViewTransform(dx = 0, dy = 0) {
-    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    const combinedScale = dpr * scale;
+    ctx.setTransform(combinedScale, 0, 0, combinedScale, 0, 0);
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
     if (dx !== 0 || dy !== 0) {
       ctx.translate(dx, dy);
@@ -740,9 +740,9 @@
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     dpr = window.devicePixelRatio || 1;
-    canvas.width = cssW * dpr;
-    canvas.height = cssH * dpr;
-    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    applyViewTransform();
   }
   window.addEventListener('resize', resize);
   resize();
