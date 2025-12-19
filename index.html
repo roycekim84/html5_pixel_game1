@@ -15,23 +15,36 @@
     color: #e0f5e6;
   }
   body {
+    background: #05070c;
+  }
+  #shell {
+    min-height: 100vh;
+    width: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: clamp(12px, 4vw, 48px);
+    box-sizing: border-box;
+    background: linear-gradient(180deg, #060912 0%, #05070c 100%);
   }
   #frame {
     border: 3px solid #3aff85;
     box-shadow: 0 0 10px rgba(58,255,133,0.6), inset 0 0 6px rgba(58,255,133,0.5);
     background: #0d1118;
+    max-width: calc(100vw - 96px);
+    max-height: calc(100vh - 96px);
   }
   canvas {
     background: #0d1118;
+    display: block;
   }
 </style>
 </head>
 <body>
-  <div id="wrapper" style="position: relative;">
-    <canvas id="frame" width="320" height="180"></canvas>
+  <div id="shell">
+    <div id="wrapper" style="position: relative;">
+      <canvas id="frame" width="320" height="180"></canvas>
+    </div>
   </div>
 <script>
 (() => {
@@ -97,6 +110,7 @@
   const RING_DAMAGE_PER_SEC = 5;
 
   // --- STATE ---
+  const shell = document.getElementById('shell');
   const canvas = document.getElementById('frame');
   const ctx = canvas.getContext('2d');
   let scale = 1;
@@ -732,9 +746,10 @@
   }
 
   function resize() {
-    const winW = window.innerWidth;
-    const winH = window.innerHeight;
-    scale = Math.min(winW / WIDTH, winH / HEIGHT);
+    const rect = shell.getBoundingClientRect();
+    const availableW = rect.width;
+    const availableH = rect.height;
+    scale = Math.min(availableW / WIDTH, availableH / HEIGHT, 3);
     const cssW = WIDTH * scale;
     const cssH = HEIGHT * scale;
     canvas.style.width = cssW + 'px';
