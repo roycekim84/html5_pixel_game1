@@ -135,6 +135,15 @@
   const keys = new Set();
   const pressed = new Set();
 
+  let options = { ...DEFAULT_OPTIONS };
+  let showOptions = false;
+  let firstRun = !localStorage.getItem('orb_first_run_done');
+  let tutorialTimer = firstRun ? 5 : 0;
+  let pendingHintTimer = firstRun ? 0 : 2;
+  let mode = 'normal';
+  let dailySeed = new Date().toISOString().slice(0, 10);
+  let rngState = Math.random() * 1e9;
+
   let state = 'START';
   let balls = [];
   let particles = [];
@@ -165,20 +174,6 @@
   noiseCanvas.height = 68;
   const noiseCtx = noiseCanvas.getContext('2d');
 
-  loadOptions();
-  tutorialTimer = firstRun ? 5 : 0;
-  pendingHintTimer = firstRun ? 0 : 2;
-  dailySeed = new Date().toISOString().slice(0, 10);
-  let options = { ...DEFAULT_OPTIONS };
-  let showOptions = false;
-  let tutorialTimer = 0;
-  let firstRun = !localStorage.getItem('orb_first_run_done');
-  let pendingHintTimer = 0;
-
-  let mode = 'normal';
-  let dailySeed = '';
-  let rngState = Math.random() * 1e9;
-
   const achievements = [
     { id: 'survive10', name: 'Survive 10s', unlocked: false },
     { id: 'survive30', name: 'Survive 30s', unlocked: false },
@@ -203,6 +198,11 @@
   let masterGain = null;
   let updateBanner = null;
   let updateCheckTimer = 0;
+  let debugVisible = false;
+  let debugFrameCount = 0;
+  let lastDtMs = 0;
+  let lastCssW = WIDTH;
+  let lastCssH = HEIGHT;
   function ensureAudio() {
     if (!options.audio) return;
     if (!audioCtx) {
@@ -306,6 +306,8 @@
     if (commentMatch) return commentMatch[1];
     return null;
   }
+
+  loadOptions();
 
   function resetPlayer() {
     player.x = WIDTH / 2;
@@ -745,6 +747,10 @@
       showOptions = !showOptions;
       pressed.delete('escape');
     }
+    if (pressed.has('`')) {
+      debugVisible = !debugVisible;
+      pressed.delete('`');
+    }
     if (showOptions) {
       if (pressed.has('g')) options.grain = !options.grain;
       if (pressed.has('s')) options.shake = !options.shake;
@@ -762,6 +768,14 @@
       saveOptions();
       pressed.clear();
       return;
+    }
+    if (pressed.has('u')) {
+      if (updateBanner) {
+        location.href = location.pathname + '?v=' + Date.now();
+      } else {
+        manualCheckForUpdate();
+      }
+      pressed.delete('u');
     }
     if (state === 'START') {
       updateCheckTimer -= dt;
@@ -1078,15 +1092,17 @@
     drawToasts();
     if (showOptions) drawOptionsOverlay();
     drawUpdateBanner();
+    drawDebugOverlay();
   }
 
   function applyViewTransform(dx = 0, dy = 0) {
-    const combinedScale = dpr * scale;
-    ctx.setTransform(combinedScale, 0, 0, combinedScale, 0, 0);
-    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (dx !== 0 || dy !== 0) {
       ctx.translate(dx, dy);
     }
+    ctx.scale(scale, scale);
   }
 
   function drawVibeOverlay() {
@@ -1172,13 +1188,34 @@
     ctx.restore();
   }
 
-  function resize() {
-    const rect = shell.getBoundingClientRect();
-    const availableW = rect.width;
-    const availableH = rect.height;
+  function drawDebugOverlay() {
+    if (!debugVisible) return;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = 'rgba(10,12,18,0.8)';
+    ctx.fillRect(6, 6, 190, 78);
+    ctx.fillStyle = '#b0ffe4';
+    ctx.font = '10px ui-monospace, monospace';
+    const lines = [
+      `css ${lastCssW.toFixed(0)}x${lastCssH.toFixed(0)} dpr ${dpr.toFixed(2)}`,
+      `canvas ${canvas.width}x${canvas.height}`,
+      `state ${state} mode ${mode}`,
+      `dt ${lastDtMs.toFixed(2)}ms frame ${debugFrameCount}`,
+      `scale ${scale.toFixed(2)}`
+    ];
+    lines.forEach((t, i) => ctx.fillText(t, 10, 16 + i * 12));
+    ctx.restore();
+  }
+
+  function resizeCanvas() {
+    const padding = Math.max(16, Math.min(window.innerWidth * 0.04, 56));
+    const availableW = Math.max(100, window.innerWidth - padding * 2);
+    const availableH = Math.max(100, window.innerHeight - padding * 2);
     scale = Math.min(availableW / WIDTH, availableH / HEIGHT, 3);
-    const cssW = WIDTH * scale;
-    const cssH = HEIGHT * scale;
+    const cssW = Math.floor(WIDTH * scale);
+    const cssH = Math.floor(HEIGHT * scale);
+    lastCssW = cssW;
+    lastCssH = cssH;
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     dpr = window.devicePixelRatio || 1;
@@ -1186,14 +1223,16 @@
     canvas.height = Math.floor(cssH * dpr);
     applyViewTransform();
   }
-  window.addEventListener('resize', resize);
-  resize();
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
 
   // --- LOOP ---
   let last = performance.now();
   function loop(now) {
     const rawDt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    lastDtMs = rawDt * 1000;
+    debugFrameCount++;
     const usedDt = hitstop > 0 ? 0 : rawDt;
     hitstop = Math.max(0, hitstop - rawDt);
 
