@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="app-version" content="0.3.5">
+<meta name="build-id" content="9bd2f4ea">
+<meta name="build-id" content="9bd2f4ea">
 <title>Pixel Survival Orbs</title>
 <style>
   html, body {
@@ -52,12 +54,15 @@
   // === CONFIGURABLE CONSTANTS ===
   const APP_VERSION = "0.3.5";
   const BUILD_STAMP = new Date().toISOString();
+  const BUILD_ID = (document.querySelector('meta[name="build-id"]')?.content) || 'dev';
   const ENABLE_GRAIN = true;
   const ENABLE_PIXEL_PARTICLES = true;
   const VIBE_INTENSITY = 0.35; // strength for vignette/grain accents
   const HUD_SCALE = 0.68;
   const HUD_ALPHA = 0.65;
   const HUD_PAD = 10;
+  const SPRITES = {};
+  let spritesGenerated = false;
   const SPRITES = {};
   let spritesReady = false;
   const DEFAULT_OPTIONS = {
@@ -148,6 +153,11 @@
   let mode = 'normal';
   let dailySeed = new Date().toISOString().slice(0, 10);
   let rngState = Math.random() * 1e9;
+  let renderMode = 'sprite';
+  let renderModeTimer = 0;
+  let lastSpriteDrawn = '';
+  let spriteFallbackWarned = false;
+  let playerMouseReady = false;
 
   let state = 'START';
   let balls = [];
@@ -313,7 +323,103 @@
     return null;
   }
 
+  function parseBuildIdFromHTML(text) {
+    const metaMatch = text.match(/name=["']build-id["']\\s+content=["']([^"']+)["']/i);
+    if (metaMatch) return metaMatch[1];
+    const commentMatch = text.match(/BUILD_ID:([A-Za-z0-9]+)/);
+    if (commentMatch) return commentMatch[1];
+    return null;
+  }
+
+  function storeSprite(name, canvas) {
+    SPRITES[name] = canvas;
+    SPRITES[name + '_w'] = canvas.width;
+    SPRITES[name + '_h'] = canvas.height;
+    if (window.createImageBitmap) {
+      createImageBitmap(canvas).then(bmp => { SPRITES[name] = bmp; }).catch(() => {});
+    }
+    if (name === 'playerMouse') playerMouseReady = true;
+  }
+
+  function makeMouseSprite(size = 48) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    const cx = size / 2, cy = size / 2;
+    g.fillStyle = '#aef6d8';
+    g.strokeStyle = '#0c2e2a';
+    g.lineWidth = 1.5;
+    g.beginPath(); g.ellipse(cx, cy + 4, 13, 10, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.ellipse(cx - 6, cy - 4, 9, 8, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#c6fbe5';
+    g.beginPath(); g.arc(cx - 11, cy - 11, 4, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(cx - 1, cy - 12, 3.5, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#ffd9b3'; g.beginPath(); g.arc(cx - 11, cy - 11, 2, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(cx - 1, cy - 12, 1.8, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#2effb9'; g.lineWidth = 2; g.beginPath(); g.moveTo(cx - 12, cy - 2); g.lineTo(cx + 2, cy - 4); g.stroke();
+    g.strokeStyle = '#5cf6ff'; g.beginPath(); g.moveTo(cx - 10, cy + 5); g.lineTo(cx + 8, cy + 2); g.stroke();
+    g.fillStyle = '#ff9b8a'; g.fillRect(cx - 15, cy - 2, 2, 2);
+    g.fillStyle = '#9ff0ff'; g.fillRect(cx - 11, cy - 6, 3, 2);
+    g.strokeStyle = '#83e8c4'; g.lineWidth = 2; g.beginPath(); g.moveTo(cx + 11, cy + 5); g.quadraticCurveTo(cx + 18, cy + 3, cx + 17, cy + 12); g.stroke();
+    g.strokeStyle = '#0c2e2a'; g.beginPath(); g.moveTo(cx + 4, cy + 9); g.lineTo(cx + 10, cy + 11); g.stroke();
+    return c;
+  }
+
+  function makeOrbSprite(type, size = 32) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    const cx = size / 2, cy = size / 2, r = size * 0.35;
+    g.fillStyle = type === 'green' ? '#7cffc4' : type === 'elite' ? '#ffb37a' : '#ff6d6d';
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = type === 'green' ? '#1c5844' : '#6c1d1d';
+    g.lineWidth = 2; g.stroke();
+    g.fillStyle = type === 'elite' ? 'rgba(255,50,120,0.5)' : 'rgba(255,255,255,0.35)';
+    g.beginPath(); g.arc(cx - r / 2, cy - r / 2, r * 0.5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.6)';
+    for (let i = 0; i < 6; i++) g.fillRect(cx + (Math.random() - 0.5) * r, cy + (Math.random() - 0.5) * r, 2, 2);
+    if (type === 'elite') { g.strokeStyle = '#ff3c78'; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy, r * 0.7, 0, Math.PI * 2); g.stroke(); }
+    return c;
+  }
+
+  function makeIconSprite(type, size = 20) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    g.lineWidth = 2;
+    if (type === 'shield') {
+      g.fillStyle = '#71e6ff'; g.strokeStyle = '#1a3a4a';
+      g.beginPath(); g.moveTo(size/2, 3); g.lineTo(size-4, size/3); g.lineTo(size/2, size-3); g.lineTo(4, size/3); g.closePath(); g.fill(); g.stroke();
+    } else if (type === 'magnet') {
+      g.strokeStyle = '#c184ff'; g.lineWidth = 3;
+      g.beginPath(); g.arc(size/2, size/2+2, size/3, Math.PI*1.1, Math.PI*1.9); g.stroke();
+      g.fillStyle = '#c184ff'; g.fillRect(size/2 - 6, size/2 - 2, 3, 4); g.fillRect(size/2 + 3, size/2 - 2, 3, 4);
+    } else {
+      g.strokeStyle = '#76b7ff'; g.lineWidth = 2;
+      g.beginPath(); g.arc(size/2, size/2, size/3, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.moveTo(size/2, size/2 - 6); g.lineTo(size/2, size/2 + 2); g.stroke();
+      g.beginPath(); g.moveTo(size/2 - 4, size/2 + 2); g.lineTo(size/2 + 4, size/2 + 2); g.stroke();
+    }
+    return c;
+  }
+
+  function generateSprites() {
+    if (spritesGenerated) return;
+    storeSprite('playerMouse', makeMouseSprite(48));
+    storeSprite('orbGreen', makeOrbSprite('green', 32));
+    storeSprite('orbRed', makeOrbSprite('red', 32));
+    storeSprite('orbElite', makeOrbSprite('elite', 32));
+    storeSprite('iconShield', makeIconSprite('shield', 22));
+    storeSprite('iconMagnet', makeIconSprite('magnet', 22));
+    storeSprite('iconSlow', makeIconSprite('slow', 22));
+    spritesGenerated = true;
+  }
+
   loadOptions();
+  generateSprites();
 
   function resetPlayer() {
     player.x = WIDTH / 2;
@@ -1306,3 +1412,4 @@
 </script>
 </body>
 </html>
+<!-- BUILD_ID:9bd2f4ea -->
