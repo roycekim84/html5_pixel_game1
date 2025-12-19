@@ -23,7 +23,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: clamp(12px, 4vw, 48px);
+    padding: clamp(16px, 4vw, 56px);
     box-sizing: border-box;
     background: linear-gradient(180deg, #060912 0%, #05070c 100%);
   }
@@ -31,8 +31,8 @@
     border: 3px solid #3aff85;
     box-shadow: 0 0 10px rgba(58,255,133,0.6), inset 0 0 6px rgba(58,255,133,0.5);
     background: #0d1118;
-    max-width: calc(100vw - 96px);
-    max-height: calc(100vh - 96px);
+    max-width: calc(100vw - 112px);
+    max-height: calc(100vh - 112px);
   }
   canvas {
     background: #0d1118;
@@ -52,6 +52,19 @@
   const ENABLE_GRAIN = true;
   const ENABLE_PIXEL_PARTICLES = true;
   const VIBE_INTENSITY = 0.35; // strength for vignette/grain accents
+  const DEFAULT_OPTIONS = {
+    grain: true,
+    shake: true,
+    hitstop: true,
+    audio: true,
+    volume: 0.5,
+    difficulty: 'normal',
+  };
+  const DIFFICULTY_SETTINGS = {
+    chill: { orbSpeed: 0.9, spawnRate: -1, damage: 0.9 },
+    normal: { orbSpeed: 1, spawnRate: 0, damage: 1 },
+    hard: { orbSpeed: 1.15, spawnRate: 1, damage: 1.1 },
+  };
   const WIDTH = 320;
   const HEIGHT = 180;
 
@@ -134,6 +147,8 @@
   let time = 0;
   let level = 1;
   let bestTime = parseFloat(localStorage.getItem('best_orb_time') || '0');
+  let bestDailyTime = parseFloat(localStorage.getItem('best_orb_daily_time') || '0');
+  let bestDailyDate = localStorage.getItem('best_orb_daily_date') || '';
   let shakeTime = 0;
   let shakeMag = 0;
   let hitstop = 0;
@@ -146,6 +161,71 @@
   noiseCanvas.width = 120;
   noiseCanvas.height = 68;
   const noiseCtx = noiseCanvas.getContext('2d');
+
+  loadOptions();
+  tutorialTimer = firstRun ? 5 : 0;
+  pendingHintTimer = firstRun ? 0 : 2;
+  dailySeed = new Date().toISOString().slice(0, 10);
+  let options = { ...DEFAULT_OPTIONS };
+  let showOptions = false;
+  let tutorialTimer = 0;
+  let firstRun = !localStorage.getItem('orb_first_run_done');
+  let pendingHintTimer = 0;
+
+  let mode = 'normal';
+  let dailySeed = '';
+  let rngState = Math.random() * 1e9;
+
+  const achievements = [
+    { id: 'survive10', name: 'Survive 10s', unlocked: false },
+    { id: 'survive30', name: 'Survive 30s', unlocked: false },
+    { id: 'survive60', name: 'Survive 60s', unlocked: false },
+    { id: 'green20', name: 'Collect 20 greens in a run', unlocked: false },
+    { id: 'size25', name: 'Reach size 25', unlocked: false },
+    { id: 'nodash30', name: '30s no dash', unlocked: false },
+    { id: 'combo10', name: 'Reach combo 10', unlocked: false },
+  ];
+  let toasts = [];
+  let greensCollected = 0;
+  let nodashTimer = 0;
+  let dashedFrame = false;
+
+  let modifier = { type: null, timer: 0 };
+  let modifierCooldown = 30;
+
+  let eliteChance = 0.05;
+  let eliteBuffTimer = 0;
+
+  let audioCtx = null;
+  let masterGain = null;
+  function ensureAudio() {
+    if (!options.audio) return;
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = options.volume;
+      masterGain.connect(audioCtx.destination);
+    } else {
+      masterGain.gain.value = options.volume;
+    }
+  }
+
+  function playTone(freq, dur, type = 'sine', vol = 0.2) {
+    if (!options.audio) return;
+    ensureAudio();
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = vol;
+    osc.connect(gain).connect(masterGain);
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.start(now);
+    osc.stop(now + dur + 0.05);
+  }
 
   const player = {
     x: WIDTH / 2,
@@ -163,6 +243,7 @@
     if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','r','enter',' '].includes(k)) {
       e.preventDefault();
     }
+    if (options.audio) ensureAudio();
     keys.add(k);
     pressed.add(k);
   });
@@ -171,7 +252,11 @@
   });
 
   // --- HELPERS ---
-  function randRange(min, max) { return Math.random() * (max - min) + min; }
+  function rng() {
+    rngState = (rngState * 1664525 + 1013904223) % 4294967296;
+    return rngState / 4294967296;
+  }
+  function randRange(min, max) { return (mode === 'daily' ? rng() : Math.random()) * (max - min) + min; }
   function clamp(v, min, max) { return v < min ? min : v > max ? max : v; }
   function distanceSq(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
   function refreshNoise() {
@@ -187,6 +272,26 @@
       id.data[i + 3] = 90;
     }
     noiseCtx.putImageData(id, 0, 0);
+  }
+
+  function setSeedFromDate(dateStr) {
+    let hash = 0;
+    for (let i = 0; i < dateStr.length; i++) {
+      hash = (hash * 31 + dateStr.charCodeAt(i)) >>> 0;
+    }
+    rngState = hash || 1;
+    dailySeed = dateStr;
+  }
+
+  function loadOptions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('orb_options') || 'null');
+      if (saved) options = { ...DEFAULT_OPTIONS, ...saved };
+    } catch (_) { options = { ...DEFAULT_OPTIONS }; }
+  }
+
+  function saveOptions() {
+    localStorage.setItem('orb_options', JSON.stringify(options));
   }
 
   function resetPlayer() {
@@ -218,13 +323,27 @@
     ringRadius = RING_START_RADIUS;
     ringTimer = 0;
     ringWarning = 0;
+    greensCollected = 0;
+    nodashTimer = 0;
+    toasts = [];
+    modifier = { type: null, timer: 0 };
+    modifierCooldown = 30;
+    eliteBuffTimer = 0;
+    if (mode === 'daily') {
+      const today = new Date();
+      const ds = today.toISOString().slice(0, 10);
+      setSeedFromDate(ds);
+    }
     resetPlayer();
     for (let i = 0; i < INITIAL_BALLS; i++) spawnBall();
   }
 
   // --- SPAWNS ---
   function spawnBall() {
-    const type = Math.random() < 0.5 ? 'green' : 'red';
+    const redBias = modifier.type === 'redrush' ? 0.25 : 0;
+    let typeRoll = randRange(0, 1);
+    let type = typeRoll < 0.5 - redBias ? 'green' : 'red';
+    if (level >= 3 && randRange(0, 1) < eliteChance) type = 'elite';
     let attempts = 0;
     let x, y;
     const r = randRange(BALL_RADIUS_MIN, BALL_RADIUS_MAX);
@@ -278,16 +397,19 @@
   }
 
   function addShake(amount) {
+    if (!options.shake) return;
     shakeMag = Math.min(6, shakeMag + amount);
     shakeTime = 0.25;
   }
 
   function applyHitstop(duration) {
+    if (!options.hitstop) return;
     hitstop = Math.max(hitstop, duration);
   }
 
   // --- GAME LOGIC ---
   function handleCollisions() {
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
     for (let i = balls.length - 1; i >= 0; i--) {
       const b = balls[i];
       const dist2 = distanceSq(player.x, player.y, b.x, b.y);
@@ -304,6 +426,12 @@
           emitParticles(b.x, b.y, '#5dff9b');
           addShake(SHAKE_GREEN);
           applyHitstop(HITSTOP_GREEN);
+          greensCollected++;
+          if (combo === 3 || combo === 6 || combo === 10) {
+            speedBoostTimer = Math.max(speedBoostTimer, 1.2);
+            player.dashCooldown = Math.max(0, player.dashCooldown - 0.6);
+          }
+          playTone(520, 0.08, 'sine', 0.15);
         } else {
           const shielded = activePower.type === 'shield' && activePower.timer > 0 && activePower.charges > 0;
           if (shielded) {
@@ -313,17 +441,24 @@
             emitParticles(b.x, b.y, '#71e6ff');
             addShake(SHAKE_GREEN);
             applyHitstop(HITSTOP_GREEN);
+            playTone(440, 0.06, 'triangle', 0.14);
           } else {
             combo = 0;
             speedBoostTimer = 0;
-            emitParticles(b.x, b.y, '#ff6d6d');
-            addShake(SHAKE_RED);
-            applyHitstop(HITSTOP_RED);
-            player.r -= PLAYER_SHRINK;
+            const shrink = (b.type === 'elite' ? PLAYER_SHRINK * 1.6 : PLAYER_SHRINK) * diff.damage;
+            emitParticles(b.x, b.y, b.type === 'elite' ? '#ff9b6d' : '#ff6d6d');
+            addShake(SHAKE_RED + (b.type === 'elite' ? 0.8 : 0));
+            applyHitstop(HITSTOP_RED + (b.type === 'elite' ? 0.02 : 0));
+            player.r -= shrink;
+            if (b.type === 'elite') {
+              eliteBuffTimer = 5;
+              player.dashCooldown = 0;
+            }
             if (player.r <= PLAYER_MIN_RADIUS) {
               endGame();
               return;
             }
+            playTone(160, 0.1, 'square', 0.18);
           }
         }
       }
@@ -356,9 +491,19 @@
 
   function endGame() {
     state = 'GAMEOVER';
+    playTone(110, 0.4, 'sine', 0.2);
     if (time > bestTime) {
       bestTime = time;
       localStorage.setItem('best_orb_time', bestTime.toFixed(2));
+    }
+    if (mode === 'daily') {
+      if (time > bestDailyTime) {
+        bestDailyTime = time;
+        const today = new Date().toISOString().slice(0, 10);
+        bestDailyDate = today;
+        localStorage.setItem('best_orb_daily_time', bestDailyTime.toFixed(2));
+        localStorage.setItem('best_orb_daily_date', bestDailyDate);
+      }
     }
   }
 
@@ -377,6 +522,7 @@
     const ay = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
     const len = Math.hypot(ax, ay);
     let boost = speedBoostTimer > 0 ? 1.25 : 1;
+    dashedFrame = false;
 
     if (len > 0) {
       const normX = ax / len;
@@ -389,6 +535,8 @@
       player.dashTime = DASH_DURATION;
       player.dashCooldown = DASH_COOLDOWN;
       addShake(1.2);
+      dashedFrame = true;
+      playTone(260, 0.08, 'sawtooth', 0.16);
     }
 
     if (player.dashTime > 0) {
@@ -419,8 +567,9 @@
   }
 
   function updateBalls(dt) {
-    const slowFactor = activePower.type === 'slow' && activePower.timer > 0 ? SLOW_FACTOR : 1;
-    const speedMultiplier = (1 + time / 30 + (level - 1) * 0.1) * slowFactor;
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+    const slowFactor = (activePower.type === 'slow' && activePower.timer > 0 ? SLOW_FACTOR : 1) * (modifier.type === 'slowtime' ? 0.75 : 1);
+    const speedMultiplier = (1 + time / 30 + (level - 1) * 0.1 + diff.spawnRate * 0.05) * slowFactor * diff.orbSpeed;
     for (const b of balls) {
       const steerAngle = randRange(-Math.PI, Math.PI);
       b.vx += Math.cos(steerAngle) * BALL_STEER * dt;
@@ -437,6 +586,14 @@
           b.vx += (dx / dist) * pull;
           b.vy += (dy / dist) * pull;
         }
+      }
+      if (modifier.type === 'magnetfield' && b.type === 'green') {
+        const dx = player.x - b.x;
+        const dy = player.y - b.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const pull = 10 * dt;
+        b.vx += (dx / dist) * pull;
+        b.vy += (dy / dist) * pull;
       }
 
       const speed = Math.hypot(b.vx, b.vy);
@@ -470,7 +627,8 @@
   }
 
   function updateDifficulty() {
-    const target = Math.min(TARGET_BALL_CAP, INITIAL_BALLS + Math.floor(time / LEVEL_INTERVAL));
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+    const target = Math.min(TARGET_BALL_CAP, INITIAL_BALLS + Math.floor(time / LEVEL_INTERVAL) + diff.spawnRate);
     if (balls.length + respawnQueue.length < target) {
       scheduleRespawn();
     }
@@ -498,6 +656,22 @@
     }
   }
 
+  function updateStageModifier(dt) {
+    modifierCooldown -= dt;
+    if (modifierCooldown <= 0 && !modifier.type) {
+      const mods = ['magnetfield', 'redrush', 'slowtime'];
+      modifier.type = mods[Math.floor(randRange(0, mods.length))];
+      modifier.timer = 15;
+      modifierCooldown = 30;
+    }
+    if (modifier.type) {
+      modifier.timer -= dt;
+      if (modifier.timer <= 0) {
+        modifier.type = null;
+      }
+    }
+  }
+
   function updateRing(dt) {
     ringTimer += dt;
     if (ringTimer > RING_SHRINK_DELAY) {
@@ -509,7 +683,8 @@
     const dy = player.y - HEIGHT / 2;
     const dist = Math.hypot(dx, dy);
     if (dist > ringRadius - player.r * 0.5) {
-      const damage = RING_DAMAGE_PER_SEC * dt;
+      const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+      const damage = RING_DAMAGE_PER_SEC * diff.damage * dt;
       player.r -= damage;
       ringWarning = 0.5;
       if (player.r <= PLAYER_MIN_RADIUS) {
@@ -519,8 +694,74 @@
     if (ringWarning > 0) ringWarning -= dt;
   }
 
+  function unlockAchievement(id) {
+    const a = achievements.find(x => x.id === id);
+    if (a && !a.unlocked) {
+      a.unlocked = true;
+      toasts.push({ text: `Unlocked: ${a.name}`, timer: 3 });
+      localStorage.setItem('orb_achievements', JSON.stringify(achievements));
+    }
+  }
+
+  function loadAchievements() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('orb_achievements') || 'null');
+      if (saved && Array.isArray(saved)) {
+        for (const a of achievements) {
+          const found = saved.find(s => s.id === a.id);
+          if (found) a.unlocked = !!found.unlocked;
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  loadAchievements();
+
+  function checkAchievements(dt) {
+    if (time >= 10) unlockAchievement('survive10');
+    if (time >= 30) unlockAchievement('survive30');
+    if (time >= 60) unlockAchievement('survive60');
+    if (greensCollected >= 20) unlockAchievement('green20');
+    if (player.r >= 25) unlockAchievement('size25');
+    if (combo >= 10) unlockAchievement('combo10');
+    if (nodashTimer >= 30) unlockAchievement('nodash30');
+  }
+
   function update(dt) {
+    if (pressed.has('escape')) {
+      showOptions = !showOptions;
+      pressed.delete('escape');
+    }
+    if (showOptions) {
+      if (pressed.has('g')) options.grain = !options.grain;
+      if (pressed.has('s')) options.shake = !options.shake;
+      if (pressed.has('h')) options.hitstop = !options.hitstop;
+      if (pressed.has('a')) options.audio = !options.audio;
+      if (pressed.has('+') || pressed.has('=')) options.volume = clamp(options.volume + 0.05, 0, 1);
+      if (pressed.has('-') || pressed.has('_')) options.volume = clamp(options.volume - 0.05, 0, 1);
+      if (pressed.has('d')) {
+        const order = ['chill', 'normal', 'hard'];
+        const idx = order.indexOf(options.difficulty);
+        options.difficulty = order[(idx + 1) % order.length];
+      }
+      if (pressed.has('m')) options.audio = !options.audio;
+      saveOptions();
+      pressed.clear();
+      return;
+    }
     if (state === 'START') {
+      if (pressed.has('tab') || pressed.has('d')) {
+        mode = mode === 'normal' ? 'daily' : 'normal';
+      }
+      if (tutorialTimer > 0) {
+        tutorialTimer = Math.max(0, tutorialTimer - dt);
+        if (tutorialTimer === 0) {
+          firstRun = false;
+          localStorage.setItem('orb_first_run_done', '1');
+        }
+      } else if (pendingHintTimer > 0) {
+        pendingHintTimer = Math.max(0, pendingHintTimer - dt);
+      }
       if (pressed.has('enter')) {
         resetGame();
         state = 'PLAY';
@@ -543,8 +784,13 @@
     graceTimer = Math.max(0, graceTimer - dt);
     if (combo > 0) comboTimer = Math.max(0, comboTimer - dt);
     if (speedBoostTimer > 0) speedBoostTimer -= dt;
+    if (eliteBuffTimer > 0) {
+      eliteBuffTimer -= dt;
+      player.dashCooldown = Math.max(0, player.dashCooldown - dt * 0.5);
+    }
 
     applyInput(dt);
+    if (dashedFrame) nodashTimer = 0; else nodashTimer += dt;
     updateBalls(dt);
     handleCollisions();
     collectPowerups();
@@ -552,9 +798,19 @@
     updateParticles(dt);
     updatePowerups(dt);
     updateDifficulty();
+    updateStageModifier(dt);
     updateRing(dt);
+    checkAchievements(dt);
+    updateToasts(dt);
 
     pressed.clear();
+  }
+
+  function updateToasts(dt) {
+    for (let i = toasts.length - 1; i >= 0; i--) {
+      toasts[i].timer -= dt;
+      if (toasts[i].timer <= 0) toasts.splice(i, 1);
+    }
   }
 
   // --- DRAW ---
@@ -582,6 +838,13 @@
     return '#76b7ff';
   }
 
+  function modifierLabel(type) {
+    if (type === 'magnetfield') return 'Magnet Field';
+    if (type === 'redrush') return 'Red Rush';
+    if (type === 'slowtime') return 'Slow Time';
+    return '';
+  }
+
   function drawRing() {
     ctx.strokeStyle = '#7df7c8';
     ctx.lineWidth = 2.2;
@@ -592,7 +855,15 @@
 
   function drawBalls() {
     for (const b of balls) {
-      ctx.fillStyle = b.type === 'green' ? '#53ff9c' : '#ff5b5b';
+      ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
+      if (b.type === 'elite') {
+        ctx.strokeStyle = 'rgba(255,155,109,0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(b.x - b.vx * 0.05, b.y - b.vy * 0.05);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.fill();
@@ -668,6 +939,10 @@
     ctx.fillText(dashTxt, WIDTH - 98, 20);
     const bestTxt = 'Best ' + bestTime.toFixed(2) + 's';
     ctx.fillText(bestTxt, WIDTH - 98, 34);
+    if (mode === 'daily') {
+      ctx.fillStyle = '#9ad9ff';
+      ctx.fillText('Daily ' + dailySeed, WIDTH - 130, 48);
+    }
 
     if (activePower.type) {
       const timeLeft = Math.max(0, activePower.timer).toFixed(1);
@@ -683,27 +958,57 @@
       ctx.fillStyle = '#ff8e8e';
       ctx.fillText('OUTSIDE ZONE!', WIDTH / 2 - 60, HEIGHT - 22);
     }
+
+    // Combo meter
+    if (combo > 0) {
+      ctx.fillStyle = '#3aff85';
+      ctx.fillRect(10, HEIGHT - 34, Math.min(combo, 10) * 10, 4);
+      ctx.fillStyle = '#e8f9e8';
+      ctx.fillText('Combo ' + combo, 10, HEIGHT - 48);
+    }
+
+    if (modifier.type) {
+      ctx.fillStyle = '#ffd27f';
+      ctx.fillText('Mod ' + modifierLabel(modifier.type) + ' ' + modifier.timer.toFixed(1) + 's', WIDTH - 160, HEIGHT - 48);
+    }
   }
 
   function drawStateOverlays() {
     if (state === 'START') {
-      drawCentered(['PIXEL ORB SURVIVE', 'Press Enter to Start', 'Move: WASD/Arrows | Dash: Shift', 'Collect GREEN to grow, RED shrinks you']);
+      const today = new Date().toISOString().slice(0, 10);
+      drawCentered([
+        'PIXEL ORB SURVIVE',
+        'Mode: ' + mode.toUpperCase() + (mode === 'daily' ? ` (${today})` : ''),
+        'Press Enter to Start  |  ESC Options  |  TAB/D Switch Mode',
+        'Move: WASD/Arrows | Dash: Shift',
+        'Collect GREEN to grow, RED shrinks you'
+      ]);
+      if (tutorialTimer > 0) {
+        drawCentered(['Tip: Dash to escape danger', 'Tip: Options with ESC'], true);
+      } else if (pendingHintTimer > 0) {
+        drawCentered(['Press Enter to Start / ESC Options'], true);
+      }
     } else if (state === 'GAMEOVER') {
-      drawCentered(['GAME OVER', 'Time: ' + time.toFixed(2) + 's', 'Best: ' + bestTime.toFixed(2) + 's', 'Press R or Enter to Restart']);
+      const bestLine = mode === 'daily'
+        ? `Daily Best: ${bestDailyTime.toFixed(2)}s (${bestDailyDate || 'N/A'})`
+        : `Best: ${bestTime.toFixed(2)}s`;
+      drawCentered(['GAME OVER', 'Time: ' + time.toFixed(2) + 's', bestLine, 'Press R or Enter to Restart']);
     }
   }
 
-  function drawCentered(lines) {
+  function drawCentered(lines, small=false) {
+    const lineH = small ? 12 : 16;
+    const startY = HEIGHT / 2 - lines.length * (lineH / 2);
     ctx.fillStyle = 'rgba(12,18,28,0.8)';
-    ctx.fillRect(30, HEIGHT / 2 - lines.length * 12 - 6, WIDTH - 60, lines.length * 16 + 12);
+    ctx.fillRect(30, startY - 10, WIDTH - 60, lines.length * lineH + 20);
     ctx.strokeStyle = '#3aff85';
     ctx.lineWidth = 2;
-    ctx.strokeRect(30, HEIGHT / 2 - lines.length * 12 - 6, WIDTH - 60, lines.length * 16 + 12);
+    ctx.strokeRect(30, startY - 10, WIDTH - 60, lines.length * lineH + 20);
     ctx.fillStyle = '#e7fde7';
-    ctx.font = '12px ui-monospace, monospace';
+    ctx.font = small ? '10px ui-monospace, monospace' : '12px ui-monospace, monospace';
     ctx.textAlign = 'center';
     lines.forEach((t, i) => {
-      ctx.fillText(t, WIDTH / 2, HEIGHT / 2 - (lines.length * 8) + i * 16);
+      ctx.fillText(t, WIDTH / 2, startY + i * lineH);
     });
     ctx.textAlign = 'left';
   }
@@ -717,6 +1022,8 @@
     drawPlayer();
     drawUI();
     drawStateOverlays();
+    drawToasts();
+    if (showOptions) drawOptionsOverlay();
   }
 
   function applyViewTransform(dx = 0, dy = 0) {
@@ -731,7 +1038,7 @@
   function drawVibeOverlay() {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (ENABLE_GRAIN) {
+    if (ENABLE_GRAIN && options.grain) {
       refreshNoise();
       ctx.globalAlpha = VIBE_INTENSITY * 0.45;
       ctx.drawImage(noiseCanvas, 0, 0, canvas.width, canvas.height);
@@ -742,6 +1049,57 @@
     vg.addColorStop(1, `rgba(0,0,0,${0.55 * VIBE_INTENSITY})`);
     ctx.fillStyle = vg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  function drawOptionsOverlay() {
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.fillStyle = 'rgba(6,9,18,0.9)';
+    ctx.strokeStyle = '#3aff85';
+    ctx.lineWidth = 2;
+    ctx.fillRect(20, 20, WIDTH - 40, HEIGHT - 40);
+    ctx.strokeRect(20, 20, WIDTH - 40, HEIGHT - 40);
+    ctx.fillStyle = '#e8f9e8';
+    ctx.font = '12px ui-monospace, monospace';
+    let y = 34;
+    const lines = [
+      'OPTIONS (ESC to close)',
+      `[G] Grain: ${options.grain ? 'ON' : 'OFF'}`,
+      `[S] Shake: ${options.shake ? 'ON' : 'OFF'}`,
+      `[H] Hitstop: ${options.hitstop ? 'ON' : 'OFF'}`,
+      `[D] Difficulty: ${options.difficulty.toUpperCase()}`,
+      `[A/M] Audio: ${options.audio ? 'ON' : 'OFF'} Vol ${Math.round(options.volume * 100)}% (+/-)`,
+      'Keybinds: Move WASD/Arrows, Dash Shift/Space, Dash Cooldown shown HUD'
+    ];
+    for (const l of lines) {
+      ctx.fillText(l, 32, y);
+      y += 16;
+    }
+    ctx.fillText('Achievements:', 32, y + 8);
+    let ay = y + 24;
+    ctx.font = '11px ui-monospace, monospace';
+    achievements.forEach(a => {
+      ctx.fillStyle = a.unlocked ? '#7bffb0' : '#7c8698';
+      ctx.fillText(`${a.unlocked ? '✓' : '•'} ${a.name}`, 40, ay);
+      ay += 14;
+    });
+    ctx.restore();
+  }
+
+  function drawToasts() {
+    if (!toasts.length) return;
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.font = '11px ui-monospace, monospace';
+    let y = HEIGHT - 60;
+    for (const t of toasts) {
+      ctx.fillStyle = 'rgba(6,9,18,0.8)';
+      ctx.fillRect(10, y, WIDTH - 20, 18);
+      ctx.fillStyle = '#f2d27f';
+      ctx.fillText(t.text, 16, y + 4);
+      y -= 22;
+    }
     ctx.restore();
   }
 
