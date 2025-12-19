@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="app-version" content="0.3.5">
+<title>Pixel Survival Orbs</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0b10;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  color: #e0f5e6;
+  }
+  body {
+    background: #05070c;
+  }
+  #shell {
+    min-height: 100vh;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(16px, 4vw, 56px);
+    box-sizing: border-box;
+    background: linear-gradient(180deg, #060912 0%, #05070c 100%);
+  }
+  #frame {
+    border: 3px solid #3aff85;
+    box-shadow: 0 0 10px rgba(58,255,133,0.6), inset 0 0 6px rgba(58,255,133,0.5);
+    background: #0d1118;
+    max-width: calc(100vw - 112px);
+    max-height: calc(100vh - 112px);
+  }
+  canvas {
+    background: #0d1118;
+    display: block;
+  }
+</style>
+</head>
+<body>
+  <div id="shell">
+    <div id="wrapper" style="position: relative;">
+      <canvas id="frame" width="320" height="180"></canvas>
+    </div>
+  </div>
+<script>
+(() => {
+  // === CONFIGURABLE CONSTANTS ===
+  const APP_VERSION = "0.3.5";
+  const BUILD_STAMP = new Date().toISOString();
+  const ENABLE_GRAIN = true;
+  const ENABLE_PIXEL_PARTICLES = true;
+  const VIBE_INTENSITY = 0.35; // strength for vignette/grain accents
+  const HUD_SCALE = 0.68;
+  const HUD_ALPHA = 0.65;
+  const HUD_PAD = 10;
+  const DEFAULT_OPTIONS = {
+    grain: true,
+    shake: true,
+    hitstop: true,
+    audio: true,
+    volume: 0.5,
+    difficulty: 'normal',
+  };
+  const DIFFICULTY_SETTINGS = {
+    chill: { orbSpeed: 0.9, spawnRate: -1, damage: 0.9 },
+    normal: { orbSpeed: 1, spawnRate: 0, damage: 1 },
+    hard: { orbSpeed: 1.15, spawnRate: 1, damage: 1.1 },
+  };
+  const WIDTH = 320;
+  const HEIGHT = 180;
+
+  // Player + dash
+  const PLAYER_START_RADIUS = 12;
+  const PLAYER_MIN_RADIUS = 6;
+  const PLAYER_GROWTH = 2.5;
+  const PLAYER_SHRINK = 3.5;
+  const PLAYER_ACCEL = 220;
+  const PLAYER_FRICTION = 8;
+  const PLAYER_MAX_SPEED = 120;
+  const DASH_MULTIPLIER = 1.9;
+  const DASH_DURATION = 0.2;
+  const DASH_COOLDOWN = 1.6;
+
+  // Orbs
+  const BALL_BASE_SPEED = 35;
+  const BALL_STEER = 20;
+  const BALL_RADIUS_MIN = 5;
+  const BALL_RADIUS_MAX = 10;
+  const INITIAL_BALLS = 8;
+  const TARGET_BALL_CAP = 16;
+  const RESPAWN_DELAY = 0.6;
+
+  // Feedback
+  const GRACE_TIME = 0.35;
+  const LEVEL_INTERVAL = 15;
+  const SHAKE_DECAY = 5;
+  const HITSTOP_GREEN = 0.04; // Timer pauses during hit stop for consistent feel.
+  const HITSTOP_RED = 0.07;
+  const SHAKE_GREEN = 1.2;
+  const SHAKE_RED = 2.8;
+  const PARTICLE_COUNT_MIN = 12;
+  const PARTICLE_COUNT_MAX = 24;
+  const PARTICLE_SIZE = [2, 3];
+
+  // Power-ups
+  const POWERUP_SPAWN_MIN = 12;
+  const POWERUP_SPAWN_MAX = 18;
+  const POWERUP_LIFETIME = 8;
+  const POWERUP_MAX_ON_FIELD = 1;
+  const POWERUP_RADIUS = 7;
+  const SHIELD_DURATION = 8;
+  const MAGNET_DURATION = 7;
+  const MAGNET_RADIUS = 70;
+  const MAGNET_PULL = 30;
+  const SLOW_DURATION = 6;
+  const SLOW_FACTOR = 0.6;
+
+  // Hazard ring
+  const RING_START_RADIUS = 260;
+  const RING_SHRINK_DELAY = 10;
+  const RING_SHRINK_RATE = 6;
+  const RING_LEVEL_RATE = 1.4;
+  const RING_MIN_RADIUS = 60;
+  const RING_DAMAGE_PER_SEC = 5;
+
+  // --- STATE ---
+  const shell = document.getElementById('shell');
+  const canvas = document.getElementById('frame');
+  const ctx = canvas.getContext('2d');
+  let scale = 1;
+  let dpr = window.devicePixelRatio || 1;
+
+  const keys = new Set();
+  const pressed = new Set();
+
+  let options = { ...DEFAULT_OPTIONS };
+  let showOptions = false;
+  let firstRun = !localStorage.getItem('orb_first_run_done');
+  let tutorialTimer = firstRun ? 5 : 0;
+  let pendingHintTimer = firstRun ? 0 : 2;
+  let mode = 'normal';
+  let dailySeed = new Date().toISOString().slice(0, 10);
+  let rngState = Math.random() * 1e9;
+
+  let state = 'START';
+  let balls = [];
+  let particles = [];
+  let respawnQueue = [];
+  let powerups = [];
+  let activePower = { type: null, timer: 0, charges: 0 };
+  let spawnPowerTimer = randRange(POWERUP_SPAWN_MIN, POWERUP_SPAWN_MAX);
+
+  let combo = 0;
+  let comboTimer = 0;
+  let speedBoostTimer = 0;
+  let graceTimer = 0;
+  let time = 0;
+  let level = 1;
+  let bestTime = parseFloat(localStorage.getItem('best_orb_time') || '0');
+  let bestDailyTime = parseFloat(localStorage.getItem('best_orb_daily_time') || '0');
+  let bestDailyDate = localStorage.getItem('best_orb_daily_date') || '';
+  let shakeTime = 0;
+  let shakeMag = 0;
+  let hitstop = 0;
+
+  let ringRadius = RING_START_RADIUS;
+  let ringTimer = 0;
+  let ringWarning = 0;
+
+  const noiseCanvas = document.createElement('canvas');
+  noiseCanvas.width = 120;
+  noiseCanvas.height = 68;
+  const noiseCtx = noiseCanvas.getContext('2d');
+
+  const achievements = [
+    { id: 'survive10', name: 'Survive 10s', unlocked: false },
+    { id: 'survive30', name: 'Survive 30s', unlocked: false },
+    { id: 'survive60', name: 'Survive 60s', unlocked: false },
+    { id: 'green20', name: 'Collect 20 greens in a run', unlocked: false },
+    { id: 'size25', name: 'Reach size 25', unlocked: false },
+    { id: 'nodash30', name: '30s no dash', unlocked: false },
+    { id: 'combo10', name: 'Reach combo 10', unlocked: false },
+  ];
+  let toasts = [];
+  let greensCollected = 0;
+  let nodashTimer = 0;
+  let dashedFrame = false;
+
+  let modifier = { type: null, timer: 0 };
+  let modifierCooldown = 30;
+
+  let eliteChance = 0.05;
+  let eliteBuffTimer = 0;
+
+  let audioCtx = null;
+  let masterGain = null;
+  let updateBanner = null;
+  let updateCheckTimer = 0;
+  let debugVisible = false;
+  let debugFrameCount = 0;
+  let lastDtMs = 0;
+  let lastCssW = WIDTH;
+  let lastCssH = HEIGHT;
+  function ensureAudio() {
+    if (!options.audio) return;
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = options.volume;
+      masterGain.connect(audioCtx.destination);
+    } else {
+      masterGain.gain.value = options.volume;
+    }
+  }
+
+  function playTone(freq, dur, type = 'sine', vol = 0.2) {
+    if (!options.audio) return;
+    ensureAudio();
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = vol;
+    osc.connect(gain).connect(masterGain);
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.start(now);
+    osc.stop(now + dur + 0.05);
+  }
+
+  const player = {
+    x: WIDTH / 2,
+    y: HEIGHT / 2,
+    vx: 0,
+    vy: 0,
+    r: PLAYER_START_RADIUS,
+    dashTime: 0,
+    dashCooldown: 0,
+  };
+
+  // --- INPUT ---
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','r','enter',' '].includes(k)) {
+      e.preventDefault();
+    }
+    if (options.audio) ensureAudio();
+    keys.add(k);
+    pressed.add(k);
+  });
+  window.addEventListener('keyup', e => {
+    keys.delete(e.key.toLowerCase());
+  });
+
+  // --- HELPERS ---
+  function rng() {
+    rngState = (rngState * 1664525 + 1013904223) % 4294967296;
+    return rngState / 4294967296;
+  }
+  function randRange(min, max) { return (mode === 'daily' ? rng() : Math.random()) * (max - min) + min; }
+  function clamp(v, min, max) { return v < min ? min : v > max ? max : v; }
+  function distanceSq(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+  function refreshNoise() {
+    if (!ENABLE_GRAIN) return;
+    const w = noiseCanvas.width;
+    const h = noiseCanvas.height;
+    const id = noiseCtx.createImageData(w, h);
+    for (let i = 0; i < id.data.length; i += 4) {
+      const n = 80 + Math.random() * 90;
+      id.data[i] = n;
+      id.data[i + 1] = n;
+      id.data[i + 2] = n;
+      id.data[i + 3] = 90;
+    }
+    noiseCtx.putImageData(id, 0, 0);
+  }
+
+  function setSeedFromDate(dateStr) {
+    let hash = 0;
+    for (let i = 0; i < dateStr.length; i++) {
+      hash = (hash * 31 + dateStr.charCodeAt(i)) >>> 0;
+    }
+    rngState = hash || 1;
+    dailySeed = dateStr;
+  }
+
+  function loadOptions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('orb_options') || 'null');
+      if (saved) options = { ...DEFAULT_OPTIONS, ...saved };
+    } catch (_) { options = { ...DEFAULT_OPTIONS }; }
+  }
+
+  function saveOptions() {
+    localStorage.setItem('orb_options', JSON.stringify(options));
+  }
+
+  function parseVersionFromHTML(text) {
+    const metaMatch = text.match(/name=["']app-version["']\\s+content=["']([^"']+)["']/i);
+    if (metaMatch) return metaMatch[1];
+    const commentMatch = text.match(/APP_VERSION:([0-9\\.]+)/);
+    if (commentMatch) return commentMatch[1];
+    return null;
+  }
+
+  loadOptions();
+
+  function resetPlayer() {
+    player.x = WIDTH / 2;
+    player.y = HEIGHT / 2;
+    player.vx = 0;
+    player.vy = 0;
+    player.r = PLAYER_START_RADIUS;
+    player.dashTime = 0;
+    player.dashCooldown = 0;
+  }
+
+  function resetGame() {
+    balls = [];
+    particles = [];
+    respawnQueue = [];
+    powerups = [];
+    activePower = { type: null, timer: 0, charges: 0 };
+    spawnPowerTimer = randRange(POWERUP_SPAWN_MIN, POWERUP_SPAWN_MAX);
+    combo = 0;
+    comboTimer = 0;
+    speedBoostTimer = 0;
+    graceTimer = 0;
+    time = 0;
+    level = 1;
+    shakeTime = 0;
+    shakeMag = 0;
+    hitstop = 0;
+    ringRadius = RING_START_RADIUS;
+    ringTimer = 0;
+    ringWarning = 0;
+    greensCollected = 0;
+    nodashTimer = 0;
+    toasts = [];
+    modifier = { type: null, timer: 0 };
+    modifierCooldown = 30;
+    eliteBuffTimer = 0;
+    if (mode === 'daily') {
+      const today = new Date();
+      const ds = today.toISOString().slice(0, 10);
+      setSeedFromDate(ds);
+    }
+    resetPlayer();
+    for (let i = 0; i < INITIAL_BALLS; i++) spawnBall();
+  }
+
+  // --- SPAWNS ---
+  function spawnBall() {
+    const redBias = modifier.type === 'redrush' ? 0.25 : 0;
+    let typeRoll = randRange(0, 1);
+    let type = typeRoll < 0.5 - redBias ? 'green' : 'red';
+    if (level >= 3 && randRange(0, 1) < eliteChance) type = 'elite';
+    let attempts = 0;
+    let x, y;
+    const r = randRange(BALL_RADIUS_MIN, BALL_RADIUS_MAX);
+    do {
+      x = randRange(r + 4, WIDTH - r - 4);
+      y = randRange(r + 4, HEIGHT - r - 4);
+      attempts++;
+    } while (attempts < 30 && distanceSq(x, y, player.x, player.y) < Math.pow(player.r + r + 12, 2));
+    const angle = randRange(0, Math.PI * 2);
+    const speed = BALL_BASE_SPEED * randRange(0.8, 1.2);
+    balls.push({
+      x, y, r, type,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+    });
+  }
+
+  function scheduleRespawn() {
+    respawnQueue.push(RESPAWN_DELAY);
+  }
+
+  function spawnPowerup() {
+    if (powerups.length >= POWERUP_MAX_ON_FIELD) return;
+    const kinds = ['shield', 'magnet', 'slow'];
+    const type = kinds[Math.floor(Math.random() * kinds.length)];
+    let x, y, attempts = 0;
+    do {
+      x = randRange(POWERUP_RADIUS + 6, WIDTH - POWERUP_RADIUS - 6);
+      y = randRange(POWERUP_RADIUS + 6, HEIGHT - POWERUP_RADIUS - 6);
+      attempts++;
+    } while (attempts < 20 && distanceSq(x, y, player.x, player.y) < Math.pow(player.r + POWERUP_RADIUS + 10, 2));
+    powerups.push({ x, y, r: POWERUP_RADIUS, type, life: POWERUP_LIFETIME });
+  }
+
+  // --- FX ---
+  function emitParticles(x, y, color) {
+    const count = Math.floor(randRange(PARTICLE_COUNT_MIN, PARTICLE_COUNT_MAX + 1));
+    const size = PARTICLE_SIZE[Math.floor(Math.random() * PARTICLE_SIZE.length)];
+    for (let i = 0; i < count; i++) {
+      const ang = randRange(0, Math.PI * 2);
+      const spd = randRange(40, 120);
+      particles.push({
+        x, y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life: randRange(0.2, 0.45),
+        color,
+        size
+      });
+    }
+  }
+
+  function addShake(amount) {
+    if (!options.shake) return;
+    shakeMag = Math.min(6, shakeMag + amount);
+    shakeTime = 0.25;
+  }
+
+  function applyHitstop(duration) {
+    if (!options.hitstop) return;
+    hitstop = Math.max(hitstop, duration);
+  }
+
+  // --- GAME LOGIC ---
+  function handleCollisions() {
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+    for (let i = balls.length - 1; i >= 0; i--) {
+      const b = balls[i];
+      const dist2 = distanceSq(player.x, player.y, b.x, b.y);
+      const rad = player.r + b.r;
+      if (dist2 < rad * rad && graceTimer <= 0) {
+        balls.splice(i, 1);
+        scheduleRespawn();
+        graceTimer = GRACE_TIME;
+        if (b.type === 'green') {
+          player.r += PLAYER_GROWTH;
+          combo += 1;
+          comboTimer = 2.5;
+          speedBoostTimer = 0.8;
+          emitParticles(b.x, b.y, '#5dff9b');
+          addShake(SHAKE_GREEN);
+          applyHitstop(HITSTOP_GREEN);
+          greensCollected++;
+          if (combo === 3 || combo === 6 || combo === 10) {
+            speedBoostTimer = Math.max(speedBoostTimer, 1.2);
+            player.dashCooldown = Math.max(0, player.dashCooldown - 0.6);
+          }
+          playTone(520, 0.08, 'sine', 0.15);
+        } else {
+          const shielded = activePower.type === 'shield' && activePower.timer > 0 && activePower.charges > 0;
+          if (shielded) {
+            activePower.charges = 0;
+            activePower.type = null;
+            activePower.timer = 0;
+            emitParticles(b.x, b.y, '#71e6ff');
+            addShake(SHAKE_GREEN);
+            applyHitstop(HITSTOP_GREEN);
+            playTone(440, 0.06, 'triangle', 0.14);
+          } else {
+            combo = 0;
+            speedBoostTimer = 0;
+            const shrink = (b.type === 'elite' ? PLAYER_SHRINK * 1.6 : PLAYER_SHRINK) * diff.damage;
+            emitParticles(b.x, b.y, b.type === 'elite' ? '#ff9b6d' : '#ff6d6d');
+            addShake(SHAKE_RED + (b.type === 'elite' ? 0.8 : 0));
+            applyHitstop(HITSTOP_RED + (b.type === 'elite' ? 0.02 : 0));
+            player.r -= shrink;
+            if (b.type === 'elite') {
+              eliteBuffTimer = 5;
+              player.dashCooldown = 0;
+            }
+            if (player.r <= PLAYER_MIN_RADIUS) {
+              endGame();
+              return;
+            }
+            playTone(160, 0.1, 'square', 0.18);
+          }
+        }
+      }
+    }
+  }
+
+  function collectPowerups() {
+    for (let i = powerups.length - 1; i >= 0; i--) {
+      const p = powerups[i];
+      const dist2 = distanceSq(player.x, player.y, p.x, p.y);
+      if (dist2 < Math.pow(player.r + p.r, 2)) {
+        powerups.splice(i, 1);
+        switch (p.type) {
+          case 'shield':
+            activePower = { type: 'shield', timer: SHIELD_DURATION, charges: 1 };
+            break;
+          case 'magnet':
+            activePower = { type: 'magnet', timer: MAGNET_DURATION, charges: 0 };
+            break;
+          case 'slow':
+            activePower = { type: 'slow', timer: SLOW_DURATION, charges: 0 };
+            break;
+        }
+        emitParticles(p.x, p.y, powerColor(p.type));
+        addShake(1.0);
+        applyHitstop(HITSTOP_GREEN);
+      }
+    }
+  }
+
+  function endGame() {
+    state = 'GAMEOVER';
+    playTone(110, 0.4, 'sine', 0.2);
+    if (time > bestTime) {
+      bestTime = time;
+      localStorage.setItem('best_orb_time', bestTime.toFixed(2));
+    }
+    if (mode === 'daily') {
+      if (time > bestDailyTime) {
+        bestDailyTime = time;
+        const today = new Date().toISOString().slice(0, 10);
+        bestDailyDate = today;
+        localStorage.setItem('best_orb_daily_time', bestDailyTime.toFixed(2));
+        localStorage.setItem('best_orb_daily_date', bestDailyDate);
+      }
+    }
+  }
+
+  function processRespawns(dt) {
+    for (let i = respawnQueue.length - 1; i >= 0; i--) {
+      respawnQueue[i] -= dt;
+      if (respawnQueue[i] <= 0) {
+        respawnQueue.splice(i, 1);
+        spawnBall();
+      }
+    }
+  }
+
+  function applyInput(dt) {
+    const ax = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+    const ay = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
+    const len = Math.hypot(ax, ay);
+    let boost = speedBoostTimer > 0 ? 1.25 : 1;
+    dashedFrame = false;
+
+    if (len > 0) {
+      const normX = ax / len;
+      const normY = ay / len;
+      player.vx += normX * PLAYER_ACCEL * dt;
+      player.vy += normY * PLAYER_ACCEL * dt;
+    }
+
+    if ((keys.has('shift') || keys.has(' ')) && player.dashCooldown <= 0 && player.dashTime <= 0) {
+      player.dashTime = DASH_DURATION;
+      player.dashCooldown = DASH_COOLDOWN;
+      addShake(1.2);
+      dashedFrame = true;
+      playTone(260, 0.08, 'sawtooth', 0.16);
+    }
+
+    if (player.dashTime > 0) {
+      boost *= DASH_MULTIPLIER;
+      player.dashTime -= dt;
+    }
+
+    if (player.dashCooldown > 0) player.dashCooldown -= dt;
+
+    const maxSpeed = PLAYER_MAX_SPEED * (1 + 0.08 * combo) * boost;
+    const speed = Math.hypot(player.vx, player.vy);
+    if (speed > maxSpeed) {
+      player.vx = (player.vx / speed) * maxSpeed;
+      player.vy = (player.vy / speed) * maxSpeed;
+    }
+
+    player.vx -= player.vx * PLAYER_FRICTION * dt;
+    player.vy -= player.vy * PLAYER_FRICTION * dt;
+
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
+
+    const margin = player.r;
+    if (player.x < margin) { player.x = margin; player.vx = Math.abs(player.vx) * 0.5; }
+    if (player.x > WIDTH - margin) { player.x = WIDTH - margin; player.vx = -Math.abs(player.vx) * 0.5; }
+    if (player.y < margin) { player.y = margin; player.vy = Math.abs(player.vy) * 0.5; }
+    if (player.y > HEIGHT - margin) { player.y = HEIGHT - margin; player.vy = -Math.abs(player.vy) * 0.5; }
+  }
+
+  function updateBalls(dt) {
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+    const slowFactor = (activePower.type === 'slow' && activePower.timer > 0 ? SLOW_FACTOR : 1) * (modifier.type === 'slowtime' ? 0.75 : 1);
+    const speedMultiplier = (1 + time / 30 + (level - 1) * 0.1 + diff.spawnRate * 0.05) * slowFactor * diff.orbSpeed;
+    for (const b of balls) {
+      const steerAngle = randRange(-Math.PI, Math.PI);
+      b.vx += Math.cos(steerAngle) * BALL_STEER * dt;
+      b.vy += Math.sin(steerAngle) * BALL_STEER * dt;
+
+      // Magnet pull
+      if (activePower.type === 'magnet' && activePower.timer > 0) {
+        const dx = player.x - b.x;
+        const dy = player.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < MAGNET_RADIUS * MAGNET_RADIUS) {
+          const dist = Math.sqrt(d2) || 1;
+          const pull = MAGNET_PULL * dt;
+          b.vx += (dx / dist) * pull;
+          b.vy += (dy / dist) * pull;
+        }
+      }
+      if (modifier.type === 'magnetfield' && b.type === 'green') {
+        const dx = player.x - b.x;
+        const dy = player.y - b.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const pull = 10 * dt;
+        b.vx += (dx / dist) * pull;
+        b.vy += (dy / dist) * pull;
+      }
+
+      const speed = Math.hypot(b.vx, b.vy);
+      const targetSpeed = BALL_BASE_SPEED * speedMultiplier;
+      if (speed > 0) {
+        const scale = clamp(targetSpeed / speed, 0, 1.2);
+        b.vx *= scale;
+        b.vy *= scale;
+      }
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); }
+      if (b.x > WIDTH - b.r) { b.x = WIDTH - b.r; b.vx = -Math.abs(b.vx); }
+      if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); }
+      if (b.y > HEIGHT - b.r) { b.y = HEIGHT - b.r; b.vy = -Math.abs(b.vy); }
+    }
+  }
+
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.9;
+      p.vy *= 0.9;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function updateDifficulty() {
+    const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+    const target = Math.min(TARGET_BALL_CAP, INITIAL_BALLS + Math.floor(time / LEVEL_INTERVAL) + diff.spawnRate);
+    if (balls.length + respawnQueue.length < target) {
+      scheduleRespawn();
+    }
+    const newLevel = 1 + Math.floor(time / LEVEL_INTERVAL);
+    if (newLevel !== level) level = newLevel;
+  }
+
+  function updatePowerups(dt) {
+    spawnPowerTimer -= dt;
+    if (spawnPowerTimer <= 0) {
+      spawnPowerup();
+      spawnPowerTimer = randRange(POWERUP_SPAWN_MIN, POWERUP_SPAWN_MAX);
+    }
+
+    for (let i = powerups.length - 1; i >= 0; i--) {
+      powerups[i].life -= dt;
+      if (powerups[i].life <= 0) powerups.splice(i, 1);
+    }
+
+    if (activePower.type) {
+      activePower.timer -= dt;
+      if (activePower.timer <= 0) {
+        activePower = { type: null, timer: 0, charges: 0 };
+      }
+    }
+  }
+
+  function updateStageModifier(dt) {
+    modifierCooldown -= dt;
+    if (modifierCooldown <= 0 && !modifier.type) {
+      const mods = ['magnetfield', 'redrush', 'slowtime'];
+      modifier.type = mods[Math.floor(randRange(0, mods.length))];
+      modifier.timer = 15;
+      modifierCooldown = 30;
+    }
+    if (modifier.type) {
+      modifier.timer -= dt;
+      if (modifier.timer <= 0) {
+        modifier.type = null;
+      }
+    }
+  }
+
+  function updateRing(dt) {
+    ringTimer += dt;
+    if (ringTimer > RING_SHRINK_DELAY) {
+      const shrinkRate = (RING_SHRINK_RATE + (level - 1) * RING_LEVEL_RATE);
+      ringRadius = Math.max(RING_MIN_RADIUS, ringRadius - shrinkRate * dt);
+    }
+
+    const dx = player.x - WIDTH / 2;
+    const dy = player.y - HEIGHT / 2;
+    const dist = Math.hypot(dx, dy);
+    if (dist > ringRadius - player.r * 0.5) {
+      const diff = DIFFICULTY_SETTINGS[options.difficulty] || DIFFICULTY_SETTINGS.normal;
+      const damage = RING_DAMAGE_PER_SEC * diff.damage * dt;
+      player.r -= damage;
+      ringWarning = 0.5;
+      if (player.r <= PLAYER_MIN_RADIUS) {
+        endGame();
+      }
+    }
+    if (ringWarning > 0) ringWarning -= dt;
+  }
+
+  function unlockAchievement(id) {
+    const a = achievements.find(x => x.id === id);
+    if (a && !a.unlocked) {
+      a.unlocked = true;
+      toasts.push({ text: `Unlocked: ${a.name}`, timer: 3 });
+      localStorage.setItem('orb_achievements', JSON.stringify(achievements));
+    }
+  }
+
+  function loadAchievements() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('orb_achievements') || 'null');
+      if (saved && Array.isArray(saved)) {
+        for (const a of achievements) {
+          const found = saved.find(s => s.id === a.id);
+          if (found) a.unlocked = !!found.unlocked;
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  loadAchievements();
+
+  function checkAchievements(dt) {
+    if (time >= 10) unlockAchievement('survive10');
+    if (time >= 30) unlockAchievement('survive30');
+    if (time >= 60) unlockAchievement('survive60');
+    if (greensCollected >= 20) unlockAchievement('green20');
+    if (player.r >= 25) unlockAchievement('size25');
+    if (combo >= 10) unlockAchievement('combo10');
+    if (nodashTimer >= 30) unlockAchievement('nodash30');
+  }
+
+  function update(dt) {
+    if (pressed.has('escape')) {
+      showOptions = !showOptions;
+      pressed.delete('escape');
+    }
+    if (pressed.has('`')) {
+      debugVisible = !debugVisible;
+      pressed.delete('`');
+    }
+    if (showOptions) {
+      if (pressed.has('g')) options.grain = !options.grain;
+      if (pressed.has('s')) options.shake = !options.shake;
+      if (pressed.has('h')) options.hitstop = !options.hitstop;
+      if (pressed.has('a')) options.audio = !options.audio;
+      if (pressed.has('+') || pressed.has('=')) options.volume = clamp(options.volume + 0.05, 0, 1);
+      if (pressed.has('-') || pressed.has('_')) options.volume = clamp(options.volume - 0.05, 0, 1);
+      if (pressed.has('d')) {
+        const order = ['chill', 'normal', 'hard'];
+        const idx = order.indexOf(options.difficulty);
+        options.difficulty = order[(idx + 1) % order.length];
+      }
+      if (pressed.has('m')) options.audio = !options.audio;
+      if (pressed.has('u')) manualCheckForUpdate();
+      saveOptions();
+      pressed.clear();
+      return;
+    }
+    if (pressed.has('u')) {
+      if (updateBanner) {
+        location.href = location.pathname + '?v=' + Date.now();
+      } else {
+        manualCheckForUpdate();
+      }
+      pressed.delete('u');
+    }
+    if (state === 'START') {
+      updateCheckTimer -= dt;
+      if (updateCheckTimer <= 0) {
+        checkForUpdate();
+        updateCheckTimer = 25;
+      }
+      if (pressed.has('tab') || pressed.has('d')) {
+        mode = mode === 'normal' ? 'daily' : 'normal';
+      }
+      if (tutorialTimer > 0) {
+        tutorialTimer = Math.max(0, tutorialTimer - dt);
+        if (tutorialTimer === 0) {
+          firstRun = false;
+          localStorage.setItem('orb_first_run_done', '1');
+        }
+      } else if (pendingHintTimer > 0) {
+        pendingHintTimer = Math.max(0, pendingHintTimer - dt);
+      }
+      if (pressed.has('enter')) {
+        resetGame();
+        state = 'PLAY';
+      }
+      pressed.clear();
+      return;
+    }
+
+    if (state === 'GAMEOVER') {
+      updateCheckTimer -= dt;
+      if (updateCheckTimer <= 0) {
+        checkForUpdate();
+        updateCheckTimer = 25;
+      }
+      if (pressed.has('r') || pressed.has('enter')) {
+        resetGame();
+        state = 'PLAY';
+      }
+      pressed.clear();
+      return;
+    }
+
+    // PLAY state
+    time += dt;
+    graceTimer = Math.max(0, graceTimer - dt);
+    if (combo > 0) comboTimer = Math.max(0, comboTimer - dt);
+    if (speedBoostTimer > 0) speedBoostTimer -= dt;
+    if (eliteBuffTimer > 0) {
+      eliteBuffTimer -= dt;
+      player.dashCooldown = Math.max(0, player.dashCooldown - dt * 0.5);
+    }
+    updateCheckTimer -= dt;
+    if (updateCheckTimer <= 0) {
+      checkForUpdate();
+      updateCheckTimer = 25;
+    }
+
+    applyInput(dt);
+    if (dashedFrame) nodashTimer = 0; else nodashTimer += dt;
+    updateBalls(dt);
+    handleCollisions();
+    collectPowerups();
+    processRespawns(dt);
+    updateParticles(dt);
+    updatePowerups(dt);
+    updateDifficulty();
+    updateStageModifier(dt);
+    updateRing(dt);
+    checkAchievements(dt);
+    updateToasts(dt);
+
+    pressed.clear();
+  }
+
+  function updateToasts(dt) {
+    for (let i = toasts.length - 1; i >= 0; i--) {
+      toasts[i].timer -= dt;
+      if (toasts[i].timer <= 0) toasts.splice(i, 1);
+    }
+  }
+
+  function manualCheckForUpdate() {
+    checkForUpdate(true);
+  }
+
+  async function checkForUpdate(manual = false) {
+    try {
+      const res = await fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" });
+      const txt = await res.text();
+      const remote = parseVersionFromHTML(txt);
+      if (remote && remote !== APP_VERSION) {
+        updateBanner = { version: remote, manual };
+      } else if (manual) {
+        toasts.push({ text: 'Already latest version', timer: 2 });
+      }
+    } catch (err) {
+      if (manual) toasts.push({ text: 'Update check failed', timer: 2 });
+    }
+  }
+
+  // --- DRAW ---
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+    g.addColorStop(0, '#0f1824');
+    g.addColorStop(1, '#090f18');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    ctx.strokeStyle = 'rgba(58,255,133,0.12)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 28; i++) {
+      const x = Math.random() * WIDTH;
+      const y = Math.random() * HEIGHT;
+      ctx.beginPath();
+      ctx.moveTo(x - 1.5, y);
+      ctx.lineTo(x + 1.5, y);
+      ctx.stroke();
+    }
+  }
+
+  function powerColor(type) {
+    if (type === 'shield') return '#71e6ff';
+    if (type === 'magnet') return '#c184ff';
+    return '#76b7ff';
+  }
+
+  function modifierLabel(type) {
+    if (type === 'magnetfield') return 'Magnet Field';
+    if (type === 'redrush') return 'Red Rush';
+    if (type === 'slowtime') return 'Slow Time';
+    return '';
+  }
+
+  function drawRing() {
+    ctx.strokeStyle = '#7df7c8';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(WIDTH / 2, HEIGHT / 2, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawBalls() {
+    for (const b of balls) {
+      ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
+      if (b.type === 'elite') {
+        ctx.strokeStyle = 'rgba(255,155,109,0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(b.x - b.vx * 0.05, b.y - b.vy * 0.05);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPowerups() {
+    for (const p of powerups) {
+      ctx.fillStyle = powerColor(p.type);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#0b0b10';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  function drawPlayer() {
+    ctx.fillStyle = '#3aff85';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#113722';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r - 1, 0, Math.PI * 2);
+    ctx.stroke();
+    if (activePower.type === 'shield' && activePower.timer > 0 && activePower.charges > 0) {
+      ctx.strokeStyle = '#71e6ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const alpha = clamp(p.life / 0.5, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = alpha;
+      const size = ENABLE_PIXEL_PARTICLES ? (p.size || 2) : Math.max(1.5, (p.size || 2) * 0.9);
+      ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawUI() {
+    const autoScale = clamp(Math.min(1, canvas.width / dpr / 900), 0.65, 1);
+    const s = HUD_SCALE * autoScale;
+    const uiPx = v => Math.round(v * s);
+    const pad = uiPx(HUD_PAD);
+    const shadowOffset = uiPx(1.2);
+    const fontPrimary = `${uiPx(11)}px ui-monospace, monospace`;
+    const fontSecondary = `${uiPx(10)}px ui-monospace, monospace`;
+    const fontTiny = `${Math.max(7, uiPx(7))}px ui-monospace, monospace`;
+
+    const shadowOn = () => {
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = shadowOffset;
+      ctx.shadowOffsetY = shadowOffset;
+    };
+    const shadowOff = () => {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
+    };
+
+    shadowOn();
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#e8f9e8';
+    ctx.font = fontPrimary;
+    const timeText = 'Time ' + time.toFixed(2) + 's';
+    ctx.fillText(timeText, pad, pad);
+
+    ctx.font = fontSecondary;
+    ctx.fillText('Size ' + player.r.toFixed(1), pad, pad + uiPx(12));
+    if (combo > 1) ctx.fillText('Combo x' + combo, pad, pad + uiPx(22));
+
+    ctx.font = fontPrimary;
+    const lvlText = 'Lvl ' + level;
+    ctx.fillText(lvlText, WIDTH - pad - ctx.measureText(lvlText).width, pad);
+    ctx.font = fontSecondary;
+    const dashTxt = player.dashCooldown <= 0 ? 'Dash READY' : 'Dash ' + player.dashCooldown.toFixed(1);
+    ctx.fillText(dashTxt, WIDTH - pad - ctx.measureText(dashTxt).width, pad + uiPx(12));
+    const bestTxt = mode === 'daily'
+      ? 'Daily ' + bestDailyTime.toFixed(2) + 's'
+      : 'Best ' + bestTime.toFixed(2) + 's';
+    ctx.fillText(bestTxt, WIDTH - pad - ctx.measureText(bestTxt).width, pad + uiPx(22));
+    if (mode === 'daily') {
+      ctx.fillStyle = '#9ad9ff';
+      ctx.fillText('Seed ' + dailySeed, WIDTH - pad - ctx.measureText('Seed ' + dailySeed).width, pad + uiPx(32));
+    }
+
+    if (activePower.type) {
+      ctx.fillStyle = powerColor(activePower.type);
+      ctx.font = fontPrimary;
+      const label = activePower.type.toUpperCase() + ' ' + Math.max(0, activePower.timer).toFixed(1) + 's';
+      ctx.fillText(label, pad, HEIGHT - uiPx(18));
+    } else {
+      ctx.fillStyle = '#9fb3aa';
+      ctx.font = fontSecondary;
+      ctx.fillText('Power none', pad, HEIGHT - uiPx(18));
+    }
+
+    if (ringWarning > 0) {
+      ctx.fillStyle = '#ff8e8e';
+      ctx.font = fontSecondary;
+      const warn = 'OUTSIDE ZONE!';
+      ctx.fillText(warn, WIDTH / 2 - ctx.measureText(warn).width / 2, HEIGHT - uiPx(18));
+    }
+
+    if (combo > 0) {
+      const barW = uiPx(80);
+      const barH = uiPx(4);
+      ctx.fillStyle = 'rgba(26,42,36,0.8)';
+      ctx.fillRect(pad, HEIGHT - uiPx(28), barW, barH);
+      ctx.fillStyle = '#3aff85';
+      ctx.fillRect(pad, HEIGHT - uiPx(28), Math.min(combo, 10) / 10 * barW, barH);
+      ctx.fillStyle = '#e8f9e8';
+      ctx.font = fontSecondary;
+      ctx.fillText('Combo ' + combo, pad, HEIGHT - uiPx(38));
+    }
+
+    if (modifier.type) {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = 'rgba(9,15,24,0.25)';
+      ctx.font = fontSecondary;
+      const modText = 'Mod ' + modifierLabel(modifier.type) + ' ' + modifier.timer.toFixed(1) + 's';
+      const textW = ctx.measureText(modText).width;
+      const modPad = uiPx(4);
+      ctx.fillRect((WIDTH - textW) / 2 - modPad, pad + uiPx(6), textW + modPad * 2, uiPx(16));
+      ctx.fillStyle = '#ffd27f';
+      ctx.fillText(modText, (WIDTH - textW) / 2, pad + uiPx(6));
+      ctx.restore();
+    }
+
+    shadowOff();
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = '#9fb3aa';
+    ctx.font = fontTiny;
+    ctx.fillText('v' + APP_VERSION, WIDTH - pad - uiPx(50), HEIGHT - uiPx(12));
+    ctx.fillText(BUILD_STAMP.slice(0, 16), WIDTH - pad - uiPx(130), HEIGHT - uiPx(22));
+    ctx.restore();
+  }
+
+  function drawStateOverlays() {
+    if (state === 'START') {
+      const today = new Date().toISOString().slice(0, 10);
+      drawCentered([
+        'PIXEL ORB SURVIVE',
+        'Mode: ' + mode.toUpperCase() + (mode === 'daily' ? ` (${today})` : ''),
+        'Press Enter to Start  |  ESC Options  |  TAB/D Switch Mode  |  U Check Update',
+        'Move: WASD/Arrows | Dash: Shift',
+        'Collect GREEN to grow, RED shrinks you'
+      ]);
+      if (tutorialTimer > 0) {
+        drawCentered(['Tip: Dash to escape danger', 'Tip: Options with ESC'], true);
+      } else if (pendingHintTimer > 0) {
+        drawCentered(['Press Enter to Start / ESC Options'], true);
+      }
+    } else if (state === 'GAMEOVER') {
+      const bestLine = mode === 'daily'
+        ? `Daily Best: ${bestDailyTime.toFixed(2)}s (${bestDailyDate || 'N/A'})`
+        : `Best: ${bestTime.toFixed(2)}s`;
+      drawCentered(['GAME OVER', 'Time: ' + time.toFixed(2) + 's', bestLine, 'Press R or Enter to Restart']);
+    }
+  }
+
+  function drawCentered(lines, small=false) {
+    const lineH = small ? 12 : 16;
+    const startY = HEIGHT / 2 - lines.length * (lineH / 2);
+    ctx.fillStyle = 'rgba(12,18,28,0.8)';
+    ctx.fillRect(30, startY - 10, WIDTH - 60, lines.length * lineH + 20);
+    ctx.strokeStyle = '#3aff85';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(30, startY - 10, WIDTH - 60, lines.length * lineH + 20);
+    ctx.fillStyle = '#e7fde7';
+    ctx.font = small ? '10px ui-monospace, monospace' : '12px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    lines.forEach((t, i) => {
+      ctx.fillText(t, WIDTH / 2, startY + i * lineH);
+    });
+    ctx.textAlign = 'left';
+  }
+
+  function renderScene() {
+    drawBackground();
+    drawRing();
+    drawBalls();
+    drawPowerups();
+    drawParticles();
+    drawPlayer();
+    drawUI();
+    drawStateOverlays();
+    drawToasts();
+    if (showOptions) drawOptionsOverlay();
+    drawUpdateBanner();
+    drawDebugOverlay();
+  }
+
+  function applyViewTransform(dx = 0, dy = 0) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (dx !== 0 || dy !== 0) {
+      ctx.translate(dx, dy);
+    }
+    ctx.scale(scale, scale);
+  }
+
+  function drawVibeOverlay() {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (ENABLE_GRAIN && options.grain) {
+      refreshNoise();
+      ctx.globalAlpha = VIBE_INTENSITY * 0.45;
+      ctx.drawImage(noiseCanvas, 0, 0, canvas.width, canvas.height);
+      ctx.globalAlpha = 1;
+    }
+    const vg = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, canvas.width * 0.2, canvas.width / 2, canvas.height / 2, canvas.width * 0.65);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, `rgba(0,0,0,${0.55 * VIBE_INTENSITY})`);
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  function drawOptionsOverlay() {
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.fillStyle = 'rgba(6,9,18,0.9)';
+    ctx.strokeStyle = '#3aff85';
+    ctx.lineWidth = 2;
+    ctx.fillRect(20, 20, WIDTH - 40, HEIGHT - 40);
+    ctx.strokeRect(20, 20, WIDTH - 40, HEIGHT - 40);
+    ctx.fillStyle = '#e8f9e8';
+    ctx.font = '12px ui-monospace, monospace';
+    let y = 34;
+    const lines = [
+      'OPTIONS (ESC to close)',
+      `[G] Grain: ${options.grain ? 'ON' : 'OFF'}`,
+      `[S] Shake: ${options.shake ? 'ON' : 'OFF'}`,
+      `[H] Hitstop: ${options.hitstop ? 'ON' : 'OFF'}`,
+      `[D] Difficulty: ${options.difficulty.toUpperCase()}`,
+      `[A/M] Audio: ${options.audio ? 'ON' : 'OFF'} Vol ${Math.round(options.volume * 100)}% (+/-)`,
+      'Keybinds: Move WASD/Arrows, Dash Shift/Space, Dash Cooldown shown HUD'
+    ];
+    for (const l of lines) {
+      ctx.fillText(l, 32, y);
+      y += 16;
+    }
+    ctx.fillText('Achievements:', 32, y + 8);
+    let ay = y + 24;
+    ctx.font = '11px ui-monospace, monospace';
+    achievements.forEach(a => {
+      ctx.fillStyle = a.unlocked ? '#7bffb0' : '#7c8698';
+      ctx.fillText(`${a.unlocked ? '✓' : '•'} ${a.name}`, 40, ay);
+      ay += 14;
+    });
+    ctx.restore();
+  }
+
+  function drawToasts() {
+    if (!toasts.length) return;
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.font = '11px ui-monospace, monospace';
+    let y = HEIGHT - 60;
+    for (const t of toasts) {
+      ctx.fillStyle = 'rgba(6,9,18,0.8)';
+      ctx.fillRect(10, y, WIDTH - 20, 18);
+      ctx.fillStyle = '#f2d27f';
+      ctx.fillText(t.text, 16, y + 4);
+      y -= 22;
+    }
+    ctx.restore();
+  }
+
+  function drawUpdateBanner() {
+    if (!updateBanner) return;
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.fillStyle = 'rgba(20,24,32,0.9)';
+    ctx.strokeStyle = '#ffcf7f';
+    ctx.lineWidth = 2;
+    ctx.fillRect(20, HEIGHT - 70, WIDTH - 40, 32);
+    ctx.strokeRect(20, HEIGHT - 70, WIDTH - 40, 32);
+    ctx.fillStyle = '#ffe6a6';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(`Update available: v${updateBanner.version} (press U to reload)`, 28, HEIGHT - 50);
+    ctx.restore();
+  }
+
+  function drawDebugOverlay() {
+    if (!debugVisible) return;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = 'rgba(10,12,18,0.8)';
+    ctx.fillRect(6, 6, 190, 78);
+    ctx.fillStyle = '#b0ffe4';
+    ctx.font = '10px ui-monospace, monospace';
+    const lines = [
+      `css ${lastCssW.toFixed(0)}x${lastCssH.toFixed(0)} dpr ${dpr.toFixed(2)}`,
+      `canvas ${canvas.width}x${canvas.height}`,
+      `state ${state} mode ${mode}`,
+      `dt ${lastDtMs.toFixed(2)}ms frame ${debugFrameCount}`,
+      `scale ${scale.toFixed(2)}`
+    ];
+    lines.forEach((t, i) => ctx.fillText(t, 10, 16 + i * 12));
+    ctx.restore();
+  }
+
+  function resizeCanvas() {
+    const padding = Math.max(16, Math.min(window.innerWidth * 0.04, 56));
+    const availableW = Math.max(100, window.innerWidth - padding * 2);
+    const availableH = Math.max(100, window.innerHeight - padding * 2);
+    scale = Math.min(availableW / WIDTH, availableH / HEIGHT, 3);
+    const cssW = Math.floor(WIDTH * scale);
+    const cssH = Math.floor(HEIGHT * scale);
+    lastCssW = cssW;
+    lastCssH = cssH;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    applyViewTransform();
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // --- LOOP ---
+  let last = performance.now();
+  function loop(now) {
+    const rawDt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    lastDtMs = rawDt * 1000;
+    debugFrameCount++;
+    const usedDt = hitstop > 0 ? 0 : rawDt;
+    hitstop = Math.max(0, hitstop - rawDt);
+
+    if (shakeTime > 0) {
+      shakeTime -= rawDt * SHAKE_DECAY;
+      if (shakeTime < 0) shakeTime = 0;
+      shakeMag = Math.max(0, shakeMag - rawDt * 20);
+    }
+
+    update(usedDt);
+    const dx = shakeTime > 0 ? (Math.random() - 0.5) * shakeMag : 0;
+    const dy = shakeTime > 0 ? (Math.random() - 0.5) * shakeMag : 0;
+    applyViewTransform(dx, dy);
+    renderScene();
+    drawVibeOverlay();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
