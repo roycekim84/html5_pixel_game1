@@ -55,6 +55,9 @@
   const ENABLE_GRAIN = true;
   const ENABLE_PIXEL_PARTICLES = true;
   const VIBE_INTENSITY = 0.35; // strength for vignette/grain accents
+  const HUD_SCALE = 0.68;
+  const HUD_ALPHA = 0.65;
+  const HUD_PAD = 10;
   const DEFAULT_OPTIONS = {
     grain: true,
     shake: true,
@@ -975,69 +978,105 @@
   }
 
   function drawUI() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(9,15,24,0.65)';
-    ctx.strokeStyle = 'rgba(58,255,133,0.5)';
-    ctx.lineWidth = 2;
-    ctx.fillRect(4, 2, 130, 44);
-    ctx.strokeRect(4, 2, 130, 44);
-    ctx.fillRect(WIDTH - 110, 2, 106, 44);
-    ctx.strokeRect(WIDTH - 110, 2, 106, 44);
-    ctx.restore();
+    const autoScale = clamp(Math.min(1, canvas.width / dpr / 900), 0.65, 1);
+    const s = HUD_SCALE * autoScale;
+    const uiPx = v => Math.round(v * s);
+    const pad = uiPx(HUD_PAD);
+    const shadowOffset = uiPx(1.2);
+    const fontPrimary = `${uiPx(11)}px ui-monospace, monospace`;
+    const fontSecondary = `${uiPx(10)}px ui-monospace, monospace`;
+    const fontTiny = `${Math.max(7, uiPx(7))}px ui-monospace, monospace`;
 
-    ctx.fillStyle = '#e8f9e8';
-    ctx.font = '11px ui-monospace, monospace';
+    const shadowOn = () => {
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = shadowOffset;
+      ctx.shadowOffsetY = shadowOffset;
+    };
+    const shadowOff = () => {
+      ctx.shadowColor = "transparent";
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
+    };
+
+    shadowOn();
     ctx.textBaseline = 'top';
+    ctx.fillStyle = '#e8f9e8';
+    ctx.font = fontPrimary;
     const timeText = 'Time ' + time.toFixed(2) + 's';
-    const sizeText = 'Size ' + player.r.toFixed(1);
-    const levelText = 'Lvl ' + level;
-    const comboText = combo > 1 ? 'Combo x' + combo : '';
-    ctx.fillText(timeText, 10, 6);
-    ctx.fillText(sizeText, 10, 20);
-    if (comboText) ctx.fillText(comboText, 10, 34);
+    ctx.fillText(timeText, pad, pad);
 
-    ctx.fillText(levelText, WIDTH - 98, 6);
+    ctx.font = fontSecondary;
+    ctx.fillText('Size ' + player.r.toFixed(1), pad, pad + uiPx(12));
+    if (combo > 1) ctx.fillText('Combo x' + combo, pad, pad + uiPx(22));
+
+    ctx.font = fontPrimary;
+    const lvlText = 'Lvl ' + level;
+    ctx.fillText(lvlText, WIDTH - pad - ctx.measureText(lvlText).width, pad);
+    ctx.font = fontSecondary;
     const dashTxt = player.dashCooldown <= 0 ? 'Dash READY' : 'Dash ' + player.dashCooldown.toFixed(1);
-    ctx.fillText(dashTxt, WIDTH - 98, 20);
-    const bestTxt = 'Best ' + bestTime.toFixed(2) + 's';
-    ctx.fillText(bestTxt, WIDTH - 98, 34);
+    ctx.fillText(dashTxt, WIDTH - pad - ctx.measureText(dashTxt).width, pad + uiPx(12));
+    const bestTxt = mode === 'daily'
+      ? 'Daily ' + bestDailyTime.toFixed(2) + 's'
+      : 'Best ' + bestTime.toFixed(2) + 's';
+    ctx.fillText(bestTxt, WIDTH - pad - ctx.measureText(bestTxt).width, pad + uiPx(22));
     if (mode === 'daily') {
       ctx.fillStyle = '#9ad9ff';
-      ctx.fillText('Daily ' + dailySeed, WIDTH - 130, 48);
+      ctx.fillText('Seed ' + dailySeed, WIDTH - pad - ctx.measureText('Seed ' + dailySeed).width, pad + uiPx(32));
     }
 
     if (activePower.type) {
-      const timeLeft = Math.max(0, activePower.timer).toFixed(1);
-      const label = activePower.type.toUpperCase() + ' ' + timeLeft + 's';
       ctx.fillStyle = powerColor(activePower.type);
-      ctx.fillText(label, 10, HEIGHT - 22);
+      ctx.font = fontPrimary;
+      const label = activePower.type.toUpperCase() + ' ' + Math.max(0, activePower.timer).toFixed(1) + 's';
+      ctx.fillText(label, pad, HEIGHT - uiPx(18));
     } else {
       ctx.fillStyle = '#9fb3aa';
-      ctx.fillText('Power none', 10, HEIGHT - 22);
+      ctx.font = fontSecondary;
+      ctx.fillText('Power none', pad, HEIGHT - uiPx(18));
     }
 
     if (ringWarning > 0) {
       ctx.fillStyle = '#ff8e8e';
-      ctx.fillText('OUTSIDE ZONE!', WIDTH / 2 - 60, HEIGHT - 22);
+      ctx.font = fontSecondary;
+      const warn = 'OUTSIDE ZONE!';
+      ctx.fillText(warn, WIDTH / 2 - ctx.measureText(warn).width / 2, HEIGHT - uiPx(18));
     }
 
-    // Combo meter
     if (combo > 0) {
+      const barW = uiPx(80);
+      const barH = uiPx(4);
+      ctx.fillStyle = 'rgba(26,42,36,0.8)';
+      ctx.fillRect(pad, HEIGHT - uiPx(28), barW, barH);
       ctx.fillStyle = '#3aff85';
-      ctx.fillRect(10, HEIGHT - 34, Math.min(combo, 10) * 10, 4);
+      ctx.fillRect(pad, HEIGHT - uiPx(28), Math.min(combo, 10) / 10 * barW, barH);
       ctx.fillStyle = '#e8f9e8';
-      ctx.fillText('Combo ' + combo, 10, HEIGHT - 48);
+      ctx.font = fontSecondary;
+      ctx.fillText('Combo ' + combo, pad, HEIGHT - uiPx(38));
     }
 
     if (modifier.type) {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = 'rgba(9,15,24,0.25)';
+      ctx.font = fontSecondary;
+      const modText = 'Mod ' + modifierLabel(modifier.type) + ' ' + modifier.timer.toFixed(1) + 's';
+      const textW = ctx.measureText(modText).width;
+      const modPad = uiPx(4);
+      ctx.fillRect((WIDTH - textW) / 2 - modPad, pad + uiPx(6), textW + modPad * 2, uiPx(16));
       ctx.fillStyle = '#ffd27f';
-      ctx.fillText('Mod ' + modifierLabel(modifier.type) + ' ' + modifier.timer.toFixed(1) + 's', WIDTH - 160, HEIGHT - 48);
+      ctx.fillText(modText, (WIDTH - textW) / 2, pad + uiPx(6));
+      ctx.restore();
     }
 
+    shadowOff();
+    ctx.save();
+    ctx.globalAlpha = 0.45;
     ctx.fillStyle = '#9fb3aa';
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.fillText('v' + APP_VERSION, WIDTH - 50, HEIGHT - 12);
-    ctx.fillText(BUILD_STAMP.slice(0, 16), WIDTH - 120, HEIGHT - 22);
+    ctx.font = fontTiny;
+    ctx.fillText('v' + APP_VERSION, WIDTH - pad - uiPx(50), HEIGHT - uiPx(12));
+    ctx.fillText(BUILD_STAMP.slice(0, 16), WIDTH - pad - uiPx(130), HEIGHT - uiPx(22));
+    ctx.restore();
   }
 
   function drawStateOverlays() {
