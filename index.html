@@ -58,6 +58,8 @@
   const HUD_SCALE = 0.68;
   const HUD_ALPHA = 0.65;
   const HUD_PAD = 10;
+  const SPRITES = {};
+  let spritesReady = false;
   const DEFAULT_OPTIONS = {
     grain: true,
     shake: true,
@@ -206,6 +208,7 @@
   let lastDtMs = 0;
   let lastCssW = WIDTH;
   let lastCssH = HEIGHT;
+  let smoothingBackup = true;
   function ensureAudio() {
     if (!options.audio) return;
     if (!audioCtx) {
@@ -920,43 +923,52 @@
 
   function drawBalls() {
     for (const b of balls) {
-      ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
-      if (b.type === 'elite') {
-        ctx.strokeStyle = 'rgba(255,155,109,0.5)';
-        ctx.lineWidth = 2;
+      const key = b.type === 'green' ? 'orbGreen' : (b.type === 'elite' ? 'orbElite' : 'orbRed');
+      const sprite = SPRITES[key];
+      if (sprite) {
+        drawSprite(sprite, b.x, b.y, b.r * 3);
+      } else {
+        ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
         ctx.beginPath();
-        ctx.moveTo(b.x - b.vx * 0.05, b.y - b.vy * 0.05);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
       }
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fill();
     }
   }
 
   function drawPowerups() {
     for (const p of powerups) {
-      ctx.fillStyle = powerColor(p.type);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#0b0b10';
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      const sprite = SPRITES[p.type === 'shield' ? 'iconShield' : p.type === 'magnet' ? 'iconMagnet' : 'iconSlow'];
+      if (sprite) {
+        const sz = p.r * 2.5;
+        drawSprite(sprite, p.x, p.y, sz);
+      } else {
+        ctx.fillStyle = powerColor(p.type);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
   function drawPlayer() {
-    ctx.fillStyle = '#3aff85';
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#113722';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, player.r - 1, 0, Math.PI * 2);
-    ctx.stroke();
+    const sprite = SPRITES.player;
+    const baseSize = player.r * 3.4;
+    if (sprite) {
+      const bob = Math.sin(performance.now() / 200) * 1.5;
+      const scaleY = player.dashTime > 0 ? 0.9 : 1;
+      const scaleX = player.dashTime > 0 ? 1.1 : 1;
+      ctx.save();
+      ctx.translate(player.x, player.y + bob);
+      ctx.scale(scaleX, scaleY);
+      drawSprite(sprite, 0, 0, baseSize);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = '#3aff85';
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
     if (activePower.type === 'shield' && activePower.timer > 0 && activePower.charges > 0) {
       ctx.strokeStyle = '#71e6ff';
       ctx.lineWidth = 2;
