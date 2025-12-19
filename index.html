@@ -61,6 +61,8 @@
   const HUD_SCALE = 0.68;
   const HUD_ALPHA = 0.65;
   const HUD_PAD = 10;
+  const SPRITE_SMOOTHING = true;
+  const IMG_PATHS = { player: 'mouse.png', green: 'cheese.png', red: 'cat.png' };
   const SPRITES = {};
   let spritesGenerated = false;
   const DEFAULT_OPTIONS = {
@@ -186,6 +188,10 @@
   noiseCanvas.width = 120;
   noiseCanvas.height = 68;
   const noiseCtx = noiseCanvas.getContext('2d');
+  const IMAGES = { player: null, green: null, red: null };
+  const imageStatus = { player: { loaded: false, err: false, w: 0, h: 0 }, green: { loaded: false, err: false, w: 0, h: 0 }, red: { loaded: false, err: false, w: 0, h: 0 } };
+  let imagesReady = false;
+  let imageDebugVisible = false;
 
   const achievements = [
     { id: 'survive10', name: 'Survive 10s', unlocked: false },
@@ -259,7 +265,7 @@
   // --- INPUT ---
   window.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
-    if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','r','enter',' '].includes(k)) {
+    if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','r','enter',' ','m','i'].includes(k)) {
       e.preventDefault();
     }
     if (options.audio) ensureAudio();
@@ -472,8 +478,35 @@
     spritesGenerated = true;
   }
 
+  function loadImages() {
+    if (imagesReady) return;
+    const entries = Object.entries(IMG_PATHS);
+    let remaining = entries.length;
+    entries.forEach(([key, path]) => {
+      const img = new Image();
+      img.onload = () => {
+        IMAGES[key] = img;
+        imageStatus[key] = { loaded: true, err: false, w: img.naturalWidth, h: img.naturalHeight };
+        if (--remaining === 0) imagesReady = true;
+      };
+      img.onerror = () => {
+        console.warn('Image load failed', key, path);
+        imageStatus[key] = { loaded: false, err: true, w: 0, h: 0 };
+        if (--remaining === 0) imagesReady = true;
+      };
+      img.src = path + '?v=' + BUILD_ID;
+    });
+    if (entries.length === 0) imagesReady = true;
+  }
+
+  function imageReady(key) {
+    const img = IMAGES[key];
+    return img && img.complete && img.naturalWidth > 0;
+  }
+
   loadOptions();
   generateSprites();
+  loadImages();
 
   function resetPlayer() {
     player.x = WIDTH / 2;
@@ -917,6 +950,10 @@
       debugVisible = !debugVisible;
       pressed.delete('`');
     }
+    if (pressed.has('i')) {
+      imageDebugVisible = !imageDebugVisible;
+      pressed.delete('i');
+    }
     if (showOptions) {
       if (pressed.has('g')) options.grain = !options.grain;
       if (pressed.has('s')) options.shake = !options.shake;
@@ -1083,7 +1120,7 @@
 
   function drawSprite(sprite, x, y, size, opts = {}) {
     if (!sprite) return false;
-    const { rotate = 0, alpha = 1, smoothing = false } = opts;
+    const { rotate = 0, alpha = 1, smoothing = SPRITE_SMOOTHING } = opts;
     const prevSmooth = ctx.imageSmoothingEnabled;
     const prevAlpha = ctx.globalAlpha;
     ctx.imageSmoothingEnabled = smoothing;
@@ -1101,12 +1138,20 @@
   function drawBalls() {
     for (const b of balls) {
       const key = b.type === 'green' ? 'orbGreen' : (b.type === 'elite' ? 'orbElite' : 'orbRed');
-      const sprite = SPRITES[key];
-      if (!drawSprite(sprite, b.x, b.y, b.r * 3)) {
-        ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-        ctx.fill();
+      const imgKey = b.type === 'green' ? 'green' : 'red';
+      let drew = false;
+      if (imageReady(imgKey)) {
+        drew = drawSprite(IMAGES[imgKey], b.x, b.y, b.r * 2.6, { smoothing: SPRITE_SMOOTHING });
+        if (drew) lastSpriteDrawn = imgKey;
+      }
+      if (!drew) {
+        const sprite = SPRITES[key];
+        if (!drawSprite(sprite, b.x, b.y, b.r * 3, { smoothing: false })) {
+          ctx.fillStyle = b.type === 'green' ? '#53ff9c' : (b.type === 'elite' ? '#ff9b6d' : '#ff5b5b');
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
   }
@@ -1125,19 +1170,30 @@
   }
 
   function drawPlayer() {
+    const img = imageReady('player') ? IMAGES.player : null;
     const sprite = SPRITES.playerMouse;
-    const baseSize = player.r * 3.4;
+    const baseSize = player.r * 2 * 1.25;
     let drewSprite = false;
-    if (renderMode === 'sprite' && sprite) {
+    if (renderMode === 'sprite') {
       const bob = Math.sin(performance.now() / 200) * 1.5;
       const scaleY = player.dashTime > 0 ? 0.9 : 1;
       const scaleX = player.dashTime > 0 ? 1.1 : 1;
-      ctx.save();
-      ctx.translate(player.x, player.y + bob);
-      ctx.scale(scaleX, scaleY);
-      drewSprite = drawSprite(sprite, 0, 0, baseSize);
-      ctx.restore();
-      if (drewSprite) lastSpriteDrawn = 'playerMouse';
+      if (img) {
+        ctx.save();
+        ctx.translate(player.x, player.y + bob);
+        ctx.scale(scaleX, scaleY);
+        drewSprite = drawSprite(img, 0, 0, baseSize, { smoothing: SPRITE_SMOOTHING });
+        ctx.restore();
+        if (drewSprite) lastSpriteDrawn = 'player-image';
+      }
+      if (!drewSprite && sprite) {
+        ctx.save();
+        ctx.translate(player.x, player.y + bob);
+        ctx.scale(scaleX, scaleY);
+        drewSprite = drawSprite(sprite, 0, 0, player.r * 3.4);
+        ctx.restore();
+        if (drewSprite) lastSpriteDrawn = 'playerMouse';
+      }
     }
     if (!drewSprite) {
       if (!spriteFallbackWarned && renderMode === 'sprite') {
@@ -1325,6 +1381,7 @@
     if (showOptions) drawOptionsOverlay();
     drawUpdateBanner();
     drawDebugOverlay();
+    drawImageDebug();
   }
 
   function applyViewTransform(dx = 0, dy = 0) {
@@ -1416,7 +1473,8 @@
     ctx.strokeRect(20, HEIGHT - 70, WIDTH - 40, 32);
     ctx.fillStyle = '#ffe6a6';
     ctx.font = '11px ui-monospace, monospace';
-    ctx.fillText(`Update available: v${updateBanner.version} (press U to reload)`, 28, HEIGHT - 50);
+    const label = updateBanner.build ? `Update available: v${updateBanner.version}+${updateBanner.build}` : `Update available: v${updateBanner.version}`;
+    ctx.fillText(`${label} (press U to reload)`, 28, HEIGHT - 50);
     ctx.restore();
   }
 
@@ -1436,6 +1494,23 @@
       `scale ${scale.toFixed(2)}`
     ];
     lines.forEach((t, i) => ctx.fillText(t, 10, 16 + i * 12));
+    ctx.restore();
+  }
+
+  function drawImageDebug() {
+    if (!imageDebugVisible) return;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = 'rgba(10,12,18,0.85)';
+    ctx.fillRect(WIDTH - 180, 6, 174, 70);
+    ctx.fillStyle = '#b0ffe4';
+    ctx.font = '10px ui-monospace, monospace';
+    const lines = Object.keys(imageStatus).map(k => {
+      const st = imageStatus[k];
+      return `${k}: ${st.loaded ? 'ok' : st.err ? 'err' : '...'} ${st.w}x${st.h}`;
+    });
+    lines.unshift(`imgs ready: ${imagesReady}`);
+    lines.forEach((t, i) => ctx.fillText(t, WIDTH - 174, 16 + i * 12));
     ctx.restore();
   }
 
