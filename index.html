@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="app-version" content="0.3.5">
 <title>Pixel Survival Orbs</title>
 <style>
   html, body {
@@ -12,7 +13,7 @@
     overflow: hidden;
     background: #0b0b10;
     font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-    color: #e0f5e6;
+  color: #e0f5e6;
   }
   body {
     background: #05070c;
@@ -49,6 +50,8 @@
 <script>
 (() => {
   // === CONFIGURABLE CONSTANTS ===
+  const APP_VERSION = "0.3.5";
+  const BUILD_STAMP = new Date().toISOString();
   const ENABLE_GRAIN = true;
   const ENABLE_PIXEL_PARTICLES = true;
   const VIBE_INTENSITY = 0.35; // strength for vignette/grain accents
@@ -198,6 +201,8 @@
 
   let audioCtx = null;
   let masterGain = null;
+  let updateBanner = null;
+  let updateCheckTimer = 0;
   function ensureAudio() {
     if (!options.audio) return;
     if (!audioCtx) {
@@ -292,6 +297,14 @@
 
   function saveOptions() {
     localStorage.setItem('orb_options', JSON.stringify(options));
+  }
+
+  function parseVersionFromHTML(text) {
+    const metaMatch = text.match(/name=["']app-version["']\\s+content=["']([^"']+)["']/i);
+    if (metaMatch) return metaMatch[1];
+    const commentMatch = text.match(/APP_VERSION:([0-9\\.]+)/);
+    if (commentMatch) return commentMatch[1];
+    return null;
   }
 
   function resetPlayer() {
@@ -745,11 +758,17 @@
         options.difficulty = order[(idx + 1) % order.length];
       }
       if (pressed.has('m')) options.audio = !options.audio;
+      if (pressed.has('u')) manualCheckForUpdate();
       saveOptions();
       pressed.clear();
       return;
     }
     if (state === 'START') {
+      updateCheckTimer -= dt;
+      if (updateCheckTimer <= 0) {
+        checkForUpdate();
+        updateCheckTimer = 25;
+      }
       if (pressed.has('tab') || pressed.has('d')) {
         mode = mode === 'normal' ? 'daily' : 'normal';
       }
@@ -771,6 +790,11 @@
     }
 
     if (state === 'GAMEOVER') {
+      updateCheckTimer -= dt;
+      if (updateCheckTimer <= 0) {
+        checkForUpdate();
+        updateCheckTimer = 25;
+      }
       if (pressed.has('r') || pressed.has('enter')) {
         resetGame();
         state = 'PLAY';
@@ -787,6 +811,11 @@
     if (eliteBuffTimer > 0) {
       eliteBuffTimer -= dt;
       player.dashCooldown = Math.max(0, player.dashCooldown - dt * 0.5);
+    }
+    updateCheckTimer -= dt;
+    if (updateCheckTimer <= 0) {
+      checkForUpdate();
+      updateCheckTimer = 25;
     }
 
     applyInput(dt);
@@ -810,6 +839,25 @@
     for (let i = toasts.length - 1; i >= 0; i--) {
       toasts[i].timer -= dt;
       if (toasts[i].timer <= 0) toasts.splice(i, 1);
+    }
+  }
+
+  function manualCheckForUpdate() {
+    checkForUpdate(true);
+  }
+
+  async function checkForUpdate(manual = false) {
+    try {
+      const res = await fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" });
+      const txt = await res.text();
+      const remote = parseVersionFromHTML(txt);
+      if (remote && remote !== APP_VERSION) {
+        updateBanner = { version: remote, manual };
+      } else if (manual) {
+        toasts.push({ text: 'Already latest version', timer: 2 });
+      }
+    } catch (err) {
+      if (manual) toasts.push({ text: 'Update check failed', timer: 2 });
     }
   }
 
@@ -971,6 +1019,11 @@
       ctx.fillStyle = '#ffd27f';
       ctx.fillText('Mod ' + modifierLabel(modifier.type) + ' ' + modifier.timer.toFixed(1) + 's', WIDTH - 160, HEIGHT - 48);
     }
+
+    ctx.fillStyle = '#9fb3aa';
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.fillText('v' + APP_VERSION, WIDTH - 50, HEIGHT - 12);
+    ctx.fillText(BUILD_STAMP.slice(0, 16), WIDTH - 120, HEIGHT - 22);
   }
 
   function drawStateOverlays() {
@@ -979,7 +1032,7 @@
       drawCentered([
         'PIXEL ORB SURVIVE',
         'Mode: ' + mode.toUpperCase() + (mode === 'daily' ? ` (${today})` : ''),
-        'Press Enter to Start  |  ESC Options  |  TAB/D Switch Mode',
+        'Press Enter to Start  |  ESC Options  |  TAB/D Switch Mode  |  U Check Update',
         'Move: WASD/Arrows | Dash: Shift',
         'Collect GREEN to grow, RED shrinks you'
       ]);
@@ -1024,6 +1077,7 @@
     drawStateOverlays();
     drawToasts();
     if (showOptions) drawOptionsOverlay();
+    drawUpdateBanner();
   }
 
   function applyViewTransform(dx = 0, dy = 0) {
@@ -1100,6 +1154,21 @@
       ctx.fillText(t.text, 16, y + 4);
       y -= 22;
     }
+    ctx.restore();
+  }
+
+  function drawUpdateBanner() {
+    if (!updateBanner) return;
+    ctx.save();
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    ctx.fillStyle = 'rgba(20,24,32,0.9)';
+    ctx.strokeStyle = '#ffcf7f';
+    ctx.lineWidth = 2;
+    ctx.fillRect(20, HEIGHT - 70, WIDTH - 40, 32);
+    ctx.strokeRect(20, HEIGHT - 70, WIDTH - 40, 32);
+    ctx.fillStyle = '#ffe6a6';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(`Update available: v${updateBanner.version} (press U to reload)`, 28, HEIGHT - 50);
     ctx.restore();
   }
 
